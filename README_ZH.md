@@ -18,7 +18,7 @@ CSA 是用于管理 patched Codex CLI 的 Rust 工具。它会检测本机的官
 官方 Codex package、配置、认证、会话和本地数据库都保留在原位。
 
 > [!IMPORTANT]
-> 当前 Manager 版本是 `0.1.8`。当前正式 patched Release 是 Codex `0.151.0` p10，共发布六个平台产物；正式 runtime 验收目前覆盖 Windows x64。
+> 当前 Manager 版本是 `0.1.8`。当前正式 patched Release 是 Codex `0.151.0` p10，共发布六个平台产物。Linux runtime 发现会在激活前校验 managed package、platform package、native binary 和必需 helper。
 
 ## 补丁增加了什么
 
@@ -62,6 +62,26 @@ bunx @dslzl/csa@0.1.8 --version
 > [!NOTE]
 > 安装 `@dslzl/csa` 只会提供 `csa` 命令。安装 package 时不会下载 patched Codex、修改 `PATH`、创建 `codex` shim 或改动官方 package。
 
+### Linux 与其他 POSIX Shell
+
+在 Bash、zsh、sh 或 fish 中使用相同的 npm 安装流程：
+
+```sh
+npm install --global @dslzl/csa@0.1.8
+csa doctor
+csa install --yes
+```
+
+POSIX 激活会在 profile 文件安全可写时，将 CSA 自有的 marker block 写入 `.profile`、`.bashrc`、`.zshrc` 和 fish 的 `conf.d`。它不会修改官方 Codex package。如果这些文件无法安全更新，安装报告会是 `prepared_but_inactive`；可以显式激活当前 Shell：
+
+```sh
+eval "$(csa shell env bash)"
+command -v codex
+codex --version
+```
+
+根据当前 Shell 使用 `csa shell env zsh`、`csa shell env sh` 或 `csa shell env fish`。`csa shell init <shell>` 会输出 source Manager 自有激活文件的 profile fragment。使用 `type -a codex` 检查 alias 和 function；它们不属于 `PATH`，需要由 Shell 单独处理。
+
 ### 2. 诊断并安装
 
 ```powershell
@@ -78,7 +98,7 @@ csa status
 
 ### 3. 确认实际运行的 Codex
 
-在 Windows 上，`install` 会先把受管的 `bin` 目录放到用户 `PATH` 最前面。如果更高优先级的系统条目仍然抢占命令，CSA 会请求 UAC，在 Program Files 下安装自己的 dispatcher，并把这个受保护目录放到系统 `PATH` 最前面。它不会改写 npm、Bun 或 pnpm 的启动器。
+在 Windows 上，`install` 会先把受管的 `bin` 目录放到用户 `PATH` 最前面。如果更高优先级的系统条目仍然抢占命令，CSA 会请求 UAC，在 Program Files 下安装自己的 dispatcher，并把这个受保护目录放到系统 `PATH` 最前面。它不会改写 npm、Bun、pnpm 或 Vite+ 的启动器。
 
 安装后请关闭所有终端窗口，并完全退出 VS Code 等承载终端的应用，再重新打开。只在同一个 VS Code 窗口中新建集成终端还会继承旧环境。
 
@@ -90,6 +110,8 @@ codex --version
 ```
 
 `where.exe codex` 的第一项应当是 CSA 自有的 `codex.exe`。patched 版本激活时，`codex --version` 会输出 `codex-cli X.Y.Z (CSA <compat-id>)`。只有系统 `PATH` 原本会抢占命令时 CSA 才请求管理员权限；拒绝授权会让激活失败并回滚。
+
+在 Linux 和其他 POSIX Shell 中，请打开新 Shell，或执行上面的 Shell 专用命令，然后运行 `command -v codex`、`type -a codex` 和 `codex --version`。受管 shim 每次启动都会校验官方 runtime package；helper、marker、版本或可执行文件指纹漂移时会安全回退。
 
 ### 4. 固定较旧的兼容修订
 
@@ -156,6 +178,8 @@ Windows 下可选的 Program Files dispatcher 是受管 shim 的受保护副本�
 | `csa unplug` | 移除 shim，同时保留 prepared state |
 | `csa status` | 报告安装、激活、命令解析和 drift |
 | `csa purge` | 删除所有 Manager 受管数据 |
+| `csa shell init <shell>` | 输出 `sh`、`bash`、`zsh` 或 `fish` 的 profile fragment |
+| `csa shell env <shell>` | 输出将 CSA bin 目录放到最前面的 Shell 命令 |
 | `csa exec --isolated` | 使用明确的隔离路径和 evidence 运行 prepared artifact |
 
 Human 输出跟随检测到的系统语言。`zh` locale 统一使用简体中文，其他 locale 使用英文。把 `--json` 放在命令前或命令后，都可以获得稳定的机器可读报告。

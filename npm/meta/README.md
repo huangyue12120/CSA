@@ -20,6 +20,8 @@ csa exec --isolated ... -- <codex-args>
 csa plug
 csa unplug
 csa purge
+csa shell init <sh|bash|zsh|fish>
+csa shell env <sh|bash|zsh|fish>
 ```
 
 Bare `install` detects the official Codex version, resolves the Manager target to the
@@ -28,6 +30,9 @@ numeric terminal `-pN` revision. Use
 `--compat` only to pin an older exact match, and use absolute paths for local
 compatibility manifests and artifacts/sources. On Windows, a successful install puts
 the verified managed bin first in the user PATH and silently rechecks `where.exe codex`.
+On POSIX systems, it writes a precise CSA-owned profile block when the relevant shell
+profiles are safe to update. Use `eval "$(csa shell env bash)"` for the current Bash
+process and verify with `command -v codex` and `type -a codex`.
 
 Interactive terminals use concise Human output and show install progress. Pass
 `--json`, or redirect stdout, for stable machine reports. `status` summarizes the

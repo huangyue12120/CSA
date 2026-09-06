@@ -126,6 +126,26 @@ jobs:
         continue-on-error: true
         run: sccache --show-stats
 
+  node-compat:
+    name: Release Node ${{ matrix.node }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        node: ["18", "20", "22", "24", "26"]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - run: |
+          node --check npm/meta/bin/csa.js
+          node --check scripts/stage_npm_packages.mjs
+          node scripts/test_npm_launcher.mjs
+
   build:
     name: Build ${{ matrix.id }}
     needs: validate
@@ -174,8 +194,14 @@ jobs:
           @(
             "CSA_RELEASE_ROOT=$root"
             "CARGO_TARGET_DIR=$(Join-Path $root 'cargo-target')"
+            "HOME=$(Join-Path $root 'home')"
+            "CODEX_HOME=$(Join-Path $root 'codex-home')"
+            "NPM_CONFIG_CACHE=$(Join-Path $root 'npm-cache')"
+            "NPM_CONFIG_PREFIX=$(Join-Path $root 'npm-prefix')"
           ) | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
           New-Item -ItemType Directory -Force $root | Out-Null
+          @('artifact', 'codex-home', 'home', 'npm-cache', 'npm-prefix', 'npm-tarballs') |
+            ForEach-Object { New-Item -ItemType Directory -Force (Join-Path $root $_) | Out-Null }
 
       - uses: actions/checkout@v7.0.1
         with:
@@ -218,6 +244,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "release binary smoke test failed with exit code $LASTEXITCODE"
           }
+
+      - name: Linux runtime and POSIX activation acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test --locked --test manager_core --target "${{ matrix.target }}" linux_real_runtime_discovery_and_shell_activation_contract
+          node scripts/test_linux_runtime.mjs "${{ runner.temp }}/csa-release/cargo-target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       - name: Package one platform asset
         id: package
@@ -282,6 +315,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "temporary-prefix npm install failed" }
           node scripts/test_installed_launcher.mjs $prefix "csa $env:VERSION"
           if ($LASTEXITCODE -ne 0) { throw "installed launcher test failed" }
+
+          if ("${{ matrix.npm_id }}" -eq "linux-x64" -or "${{ matrix.npm_id }}" -eq "linux-arm64") {
+            node scripts/test_linux_runtime.mjs (Join-Path $prefix "node_modules/@dslzl/csa/bin/csa.js")
+            if ($LASTEXITCODE -ne 0) { throw "installed Linux runtime acceptance failed" }
+          }
+
           npm uninstall --prefix $prefix --offline --no-audit --no-fund "@dslzl/csa" "@dslzl/csa-${{ matrix.npm_id }}"
           if ($LASTEXITCODE -ne 0) { throw "temporary-prefix npm uninstall failed" }
 
@@ -306,7 +345,7 @@ jobs:
 
   publish:
     name: Publish CSA ${{ needs.validate.outputs.tag }}
-    needs: [validate, quality, build]
+    needs: [validate, quality, node-compat, build]
     runs-on: ubuntu-24.04
     permissions:
       actions: write

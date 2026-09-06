@@ -18,7 +18,7 @@ CSA is a Rust manager for patched Codex CLI builds. It detects the installed off
 The official Codex package, configuration, authentication, sessions, and local databases stay in place.
 
 > [!IMPORTANT]
-> The current Manager is `0.1.8`. The current formal patched Release is Codex `0.151.0` p10. Six native patched artifacts are published; formal runtime acceptance currently covers Windows x64.
+> The current Manager is `0.1.8`. The current formal patched Release is Codex `0.151.0` p10. Six native patched artifacts are published. Linux runtime discovery validates the managed package, platform package, native binary, and required helpers before activation.
 
 ## What the patch adds
 
@@ -62,6 +62,26 @@ bunx @dslzl/csa@0.1.8 --version
 > [!NOTE]
 > Installing `@dslzl/csa` exposes the `csa` command only. Package installation does not download patched Codex, edit `PATH`, create a `codex` shim, or modify the official package.
 
+### Linux and other POSIX shells
+
+Use the same npm installation from Bash, zsh, sh, or fish:
+
+```sh
+npm install --global @dslzl/csa@0.1.8
+csa doctor
+csa install --yes
+```
+
+POSIX activation writes a CSA-owned marker block to `.profile`, `.bashrc`, `.zshrc`, and fish `conf.d` when those files are safe to update. It never edits the official Codex package. The install report is `prepared_but_inactive` when those files cannot be updated; activate the current shell explicitly:
+
+```sh
+eval "$(csa shell env bash)"
+command -v codex
+codex --version
+```
+
+Use `csa shell env zsh`, `csa shell env sh`, or `csa shell env fish` for the active shell. `csa shell init <shell>` prints the profile fragment that sources the manager-owned activation file. Check aliases and functions with `type -a codex`; they are separate from `PATH` and must be resolved by the shell.
+
 ### 2. Diagnose and install
 
 ```powershell
@@ -78,7 +98,7 @@ No GitHub login is required. CSA uses public Git refs, chooses direct GitHub or 
 
 ### 3. Confirm which Codex will run
 
-On Windows, `install` first puts the managed `bin` directory at the front of the user `PATH`. If a higher-priority machine entry still wins, CSA requests UAC, installs its own dispatcher under Program Files, and puts that protected directory first in the machine `PATH`. It never edits npm, Bun, or pnpm launchers.
+On Windows, `install` first puts the managed `bin` directory at the front of the user `PATH`. If a higher-priority machine entry still wins, CSA requests UAC, installs its own dispatcher under Program Files, and puts that protected directory first in the machine `PATH`. It never edits npm, Bun, pnpm, or Vite+ launchers.
 
 Close every terminal window and fully quit terminal hosts such as VS Code after installation, then reopen one. Opening another integrated terminal inside the same VS Code window is not enough.
 
@@ -90,6 +110,8 @@ codex --version
 ```
 
 `where.exe codex` should list a CSA-owned `codex.exe` first. An active patched installation prints `codex-cli X.Y.Z (CSA <compat-id>)` from `codex --version`. CSA requests administrator permission only when the machine `PATH` would otherwise take priority; denying the prompt fails activation and rolls it back.
+
+On Linux and other POSIX shells, start a new shell or evaluate the shell-specific command above, then run `command -v codex`, `type -a codex`, and `codex --version`. The managed shim validates the official runtime package on every launch and falls back safely when a helper, marker, version, or executable fingerprint drifts.
 
 ### 4. Pin a compatible older revision
 
@@ -156,6 +178,8 @@ Read [CSA architecture](docs/architecture.md) for the complete trust, download, 
 | `csa unplug` | Remove the shim while keeping prepared state |
 | `csa status` | Report installation, activation, command resolution, and drift |
 | `csa purge` | Remove all Manager-owned data |
+| `csa shell init <shell>` | Print the profile fragment for `sh`, `bash`, `zsh`, or `fish` |
+| `csa shell env <shell>` | Print a shell-specific command that prepends the CSA bin directory |
 | `csa exec --isolated` | Run the prepared artifact with explicit isolated paths and evidence |
 
 Human output follows the detected system language. A `zh` locale uses Simplified Chinese; other locales use English. Use `--json` before or after a command for the stable machine-readable report.

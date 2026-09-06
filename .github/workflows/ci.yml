@@ -246,7 +246,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        if: needs.changes.outputs.launcher == 'true' || needs.changes.outputs.packaged_docs == 'true' || needs.changes.outputs.workflows == 'true'
+        if: needs.changes.outputs.manager == 'true' || needs.changes.outputs.launcher == 'true' || needs.changes.outputs.packaged_docs == 'true' || needs.changes.outputs.workflows == 'true'
         uses: actions/setup-node@v7.0.0
         with:
           node-version: "26"
@@ -278,6 +278,13 @@ jobs:
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --all-targets
 
+      - name: Linux runtime and POSIX activation acceptance
+        if: runner.os == 'Linux' && (needs.changes.outputs.manager == 'true' || needs.changes.outputs.workflows == 'true')
+        shell: bash
+        run: |
+          cargo build --release
+          node scripts/test_linux_runtime.mjs target/release/csa
+
       - name: Rust cache statistics
         if: always() && (needs.changes.outputs.manager == 'true' || needs.changes.outputs.workflows == 'true')
         continue-on-error: true
@@ -301,7 +308,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        node: ["22", "24"]
+        node: ["18", "20", "22", "24", "26"]
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -389,6 +396,12 @@ jobs:
           cargo test --all-targets --target ${{ matrix.target }}
           cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
           cargo build --release --target ${{ matrix.target }}
+      - name: Linux runtime and POSIX activation acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test --locked --test manager_core --target "${{ matrix.target }}" linux_real_runtime_discovery_and_shell_activation_contract
+          node scripts/test_linux_runtime.mjs "${{ runner.temp }}/csa/cargo-target/${{ matrix.target }}/release/${{ matrix.binary }}"
       - name: Rust cache statistics
         if: always()
         continue-on-error: true
@@ -422,6 +435,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "temporary-prefix npm install failed" }
           node scripts/test_installed_launcher.mjs "${{ runner.temp }}/csa/npm-prefix"
           if ($LASTEXITCODE -ne 0) { throw "installed launcher test failed" }
+      - name: Installed Linux runtime and POSIX activation acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          node scripts/test_linux_runtime.mjs "${{ runner.temp }}/csa/npm-prefix/node_modules/@dslzl/csa/bin/csa.js"
+      - name: Remove temporary npm packages
+        shell: pwsh
+        run: |
           npm uninstall --prefix "${{ runner.temp }}/csa/npm-prefix" --offline --no-audit --no-fund "@dslzl/csa" "@dslzl/csa-${{ matrix.id }}"
           if ($LASTEXITCODE -ne 0) { throw "temporary-prefix npm uninstall failed" }
       - name: Record platform artifact

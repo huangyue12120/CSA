@@ -2,13 +2,24 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { readFileSync, realpathSync, statSync } = require('node:fs');
+const { readFileSync, realpathSync, statSync, writeSync } = require('node:fs');
 const { dirname, isAbsolute, relative, resolve, sep } = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
+
+class LauncherFailure extends Error {}
+
+process.on('uncaughtException', (error) => {
+  if (error instanceof LauncherFailure) {
+    process.exitCode = 1;
+    return;
+  }
+  throw error;
+});
 
 function fail(message) {
-  process.stderr.write(`csa: ${message}\n`);
-  process.exit(1);
+  process.exitCode = 1;
+  writeSync(2, `csa: ${message}\n`);
+  throw new LauncherFailure(message);
 }
 
 const packageRoot = resolve(__dirname, '..');
@@ -81,19 +92,46 @@ if (actualHash !== binding.sha256) {
   fail(`platform binary checksum mismatch for ${selected.package}`);
 }
 
-const child = spawnSync(binaryRealPath, process.argv.slice(2), {
+const child = spawn(binaryRealPath, process.argv.slice(2), {
   stdio: 'inherit',
   windowsHide: false,
 });
-if (child.error) {
-  fail(`failed to start platform binary: ${child.error.message}`);
-}
-if (child.signal) {
-  try {
-    process.kill(process.pid, child.signal);
-  } catch {
-    process.exit(1);
+const forwardedSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const signalHandlers = new Map();
+if (process.platform !== 'win32') {
+  for (const signal of forwardedSignals) {
+    const handler = () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill(signal);
+      }
+    };
+    signalHandlers.set(signal, handler);
+    process.on(signal, handler);
   }
-} else {
-  process.exit(child.status ?? 1);
 }
+
+function stopForwarding() {
+  for (const [signal, handler] of signalHandlers) {
+    process.removeListener(signal, handler);
+  }
+}
+
+child.on('error', (error) => {
+  stopForwarding();
+  fail('failed to start platform binary: ' + error.message);
+});
+
+child.on('exit', (code, signal) => {
+  stopForwarding();
+  if (signal) {
+    try {
+      process.kill(process.pid, signal);
+    } catch {
+      process.exitCode = 128;
+    }
+    return;
+  }
+  // Let inherited stdio flush before the launcher exits. Calling process.exit()
+  // here can truncate the platform process's final stdout/stderr bytes.
+  process.exitCode = code ?? 1;
+});

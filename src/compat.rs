@@ -1,5 +1,6 @@
 use crate::error::{ManagerError, Result};
 use crate::hash::{sha256_bytes, sha256_file};
+use crate::state::require_utf8_path;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -191,6 +192,7 @@ impl LoadedCompatibility {
     }
 
     fn load_inner(manifest_path: &Path, target: Option<&str>) -> Result<Self> {
+        require_utf8_path(manifest_path, "manifest path")?;
         if !manifest_path.is_absolute() {
             return Err(ManagerError::new(
                 "invalid_manifest_path",

@@ -4,6 +4,7 @@ use crate::detect::{detect_official, parse_codex_version};
 use crate::error::{ManagerError, Result};
 use crate::hash::sha256_file;
 use crate::manager::{InstallEvent, OnlineInstallOptions};
+use crate::platform::{ensure_executable, runtime_artifact_target};
 use crate::process::ProcessRunner;
 use crate::state::{ManagerPaths, ensure_managed_directory, remove_managed_tree};
 use serde::Deserialize;
@@ -305,6 +306,7 @@ fn resolve_online_install_inner(
             ),
         ));
     }
+    ensure_executable(&artifact_path)?;
 
     Ok(OnlineBundle {
         manager_root: options.manager_root.clone(),
@@ -396,11 +398,7 @@ fn install_candidates(
 }
 
 fn compatibility_artifact_target(manager_target: &str) -> &str {
-    match manager_target {
-        "x86_64-unknown-linux-gnu" => "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-gnu" => "aarch64-unknown-linux-musl",
-        target => target,
-    }
+    runtime_artifact_target(manager_target)
 }
 
 fn take_selected_candidate(

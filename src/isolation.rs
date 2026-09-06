@@ -1,7 +1,7 @@
 use crate::detect::OfficialCodex;
 use crate::error::{ManagerError, Result};
 use crate::hash::sha256_os_str;
-use crate::state::ManagerPaths;
+use crate::state::{ManagerPaths, require_utf8_path};
 use directories::BaseDirs;
 use serde::Serialize;
 use std::fs;
@@ -42,9 +42,11 @@ impl IsolationPlan {
             ("state", &request.state_dir),
             ("record", &request.record_path),
         ] {
+            require_utf8_path(path, label)?;
             require_absolute(label, path)?;
         }
         if let Some(prefix) = &request.npm_prefix {
+            require_utf8_path(prefix, "npm prefix")?;
             require_absolute("npm prefix", prefix)?;
         }
         let mut requested = vec![

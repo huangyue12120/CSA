@@ -10,6 +10,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -79,9 +80,104 @@ async function testProcessGroupSignal(env, cwd) {
   }
 }
 
+function runLauncher(args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [launcher, ...args], {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (data) => {
+      stdout += data;
+    });
+    child.stderr.on('data', (data) => {
+      stderr += data;
+    });
+    child.once('error', reject);
+    child.once('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
+  });
+}
+
+async function testTopLevelSignal(env, cwd) {
+  if (process.platform === 'win32') {
+    return 'not_verified_on_windows';
+  }
+  const child = spawn(
+    process.execPath,
+    [launcher, '-e', 'process.stdout.write("ready\\n");setInterval(() => {}, 1000)'],
+    { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let timer;
+  try {
+    await Promise.race([
+      new Promise((resolveReady, rejectReady) => {
+        child.stdout.once('data', (data) => {
+          if (data.toString().includes('ready')) resolveReady();
+          else rejectReady(new Error(`unexpected signal probe output: ${data}`));
+        });
+        child.once('exit', (code, signal) =>
+          rejectReady(new Error(`signal probe exited early: code=${code} signal=${signal}`)),
+        );
+      }),
+      new Promise((_, rejectTimeout) => {
+        timer = setTimeout(() => rejectTimeout(new Error('top-level signal probe startup timed out')), 5000);
+      }),
+    ]);
+    clearTimeout(timer);
+    const closed = new Promise((resolveClose) =>
+      child.once('close', (code, signal) => resolveClose({ code, signal })),
+    );
+    process.kill(child.pid, 'SIGTERM');
+    const outcome = await Promise.race([
+      closed,
+      new Promise((_, rejectTimeout) => {
+        timer = setTimeout(() => rejectTimeout(new Error('top-level signal probe shutdown timed out')), 5000);
+      }),
+    ]);
+    assert.equal(outcome.code, null);
+    assert.equal(outcome.signal, 'SIGTERM');
+    return 'pass';
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) {
+      process.kill(child.pid, 'SIGKILL');
+    }
+  }
+}
+
 const temporary = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'csa-launcher-')));
 try {
   const stagedRoot = path.join(temporary, 'stage');
+  const probeBinary = path.join(temporary, 'platform-probe');
+  if (process.platform !== 'win32') {
+    writeFileSync(
+      probeBinary,
+      `#!/bin/sh
+case "$1" in
+  -e)
+    case "$2" in
+      *JSON.stringify*)
+        printf '{"args":["space value","--literal=$()"],"cwd":"%s","marker":"%s"}' "$PWD" "$CSA_LAUNCHER_MARKER"
+        printf 'stderr-ok' >&2
+        ;;
+      *setInterval*)
+        printf 'ready\\n'
+        while :; do sleep 1; done
+        ;;
+      *process.exit\\(37\\)*)
+        exit 37
+        ;;
+    esac
+    ;;
+esac
+`,
+    );
+    chmodSync(probeBinary, 0o755);
+  }
+  const platformBinary = process.platform === 'win32' ? process.execPath : probeBinary;
   const staged = spawnSync(
     process.execPath,
     [
@@ -89,11 +185,17 @@ try {
       '--out',
       stagedRoot,
       '--binary',
-      `${selected.id}=${process.execPath}`,
+      `${selected.id}=${platformBinary}`,
     ],
     { encoding: 'utf8' },
   );
   assert.equal(staged.status, 0, staged.stderr || staged.stdout);
+  if (process.platform !== 'win32') {
+    assert.notEqual(
+      statSync(path.join(stagedRoot, 'meta', 'bin', 'csa.js')).mode & 0o111,
+      0,
+    );
+  }
   const sourceRepository = { type: 'git', url: 'https://github.com/DSLZL/CSA' };
   assert.deepEqual(
     JSON.parse(readFileSync(path.join(stagedRoot, 'meta', 'package.json'), 'utf8')).repository,
@@ -109,7 +211,7 @@ try {
   const packageRoot = path.join(temporary, 'node_modules', ...selected.package.split('/'));
   const binary = path.resolve(packageRoot, selected.binary);
   mkdirSync(path.dirname(binary), { recursive: true });
-  copyFileSync(process.execPath, binary);
+  copyFileSync(platformBinary, binary);
   if (process.platform !== 'win32') {
     chmodSync(binary, 0o755);
   }
@@ -139,10 +241,9 @@ try {
     'space value',
     '--literal=$()',
   ];
-  const forwarded = spawnSync(process.execPath, [launcher, ...probe], {
+  const forwarded = await runLauncher(probe, {
     cwd: temporary,
     env,
-    encoding: 'utf8',
   });
   assert.equal(forwarded.status, 0, forwarded.stderr);
   assert.equal(forwarded.stderr, 'stderr-ok');
@@ -152,26 +253,26 @@ try {
     marker: 'marker value',
   });
 
-  const exit = spawnSync(process.execPath, [launcher, '-e', 'process.exit(37)'], {
+  const exit = await runLauncher(['-e', 'process.exit(37)'], {
     env,
-    encoding: 'utf8',
   });
   assert.equal(exit.status, 37);
   const signal = await testProcessGroupSignal(env, temporary);
+  const topLevelSignal = await testTopLevelSignal(env, temporary);
 
   platformManifest.csa.sha256 = '0'.repeat(64);
   writeFileSync(manifestPath, `${JSON.stringify(platformManifest, null, 2)}\n`);
-  const drift = spawnSync(process.execPath, [launcher, '--version'], { env, encoding: 'utf8' });
+  const drift = await runLauncher(['--version'], { env });
   assert.equal(drift.status, 1);
   assert.match(drift.stderr, /checksum mismatch/);
 
   rmSync(packageRoot, { recursive: true, force: true });
-  const missing = spawnSync(process.execPath, [launcher, '--version'], { env, encoding: 'utf8' });
+  const missing = await runLauncher(['--version'], { env });
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /required platform package .* is not installed/);
 
   process.stdout.write(
-    `${JSON.stringify({ schema: 1, argv_env_cwd_stdio: 'pass', exit_code: 'pass', checksum_drift: 'pass', missing_platform: 'pass', signal }, null, 2)}\n`,
+    `${JSON.stringify({ schema: 1, argv_env_cwd_stdio: 'pass', exit_code: 'pass', checksum_drift: 'pass', missing_platform: 'pass', signal, top_level_signal: topLevelSignal }, null, 2)}\n`,
   );
 } finally {
   rmSync(temporary, { recursive: true, force: true });

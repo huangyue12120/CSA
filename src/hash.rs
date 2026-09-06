@@ -32,5 +32,19 @@ pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
 }
 
 pub fn sha256_os_str(value: &OsStr) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        sha256_bytes(value.as_bytes())
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let bytes: Vec<u8> = value.encode_wide().flat_map(u16::to_le_bytes).collect();
+        sha256_bytes(&bytes)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     sha256_bytes(value.to_string_lossy().as_bytes())
 }

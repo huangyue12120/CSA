@@ -64,6 +64,7 @@ impl CommandSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandResult {
     pub code: Option<i32>,
+    pub signal: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
@@ -72,6 +73,7 @@ impl CommandResult {
     pub fn success(stdout: impl Into<Vec<u8>>) -> Self {
         Self {
             code: Some(0),
+            signal: None,
             stdout: stdout.into(),
             stderr: Vec::new(),
         }
@@ -82,15 +84,29 @@ impl CommandResult {
             return Ok(self);
         }
         let detail = String::from_utf8_lossy(&self.stderr).trim().to_owned();
+        let termination = self.signal.map_or_else(
+            || format!("{:?}", self.code),
+            |signal| format!("signal {signal}"),
+        );
         Err(ManagerError::new(
             "command_failed",
-            format!("{context} exited {:?}: {detail}", self.code),
+            format!("{context} exited {termination}: {detail}"),
         ))
+    }
+
+    pub fn exit_code(&self) -> i32 {
+        self.code
+            .or_else(|| self.signal.map(|signal| 128 + signal))
+            .unwrap_or(1)
     }
 }
 
 pub trait ProcessRunner: Send + Sync {
     fn run(&self, command: &CommandSpec) -> Result<CommandResult>;
+
+    fn exec(&self, command: &CommandSpec) -> Result<i32> {
+        Ok(self.run(command)?.exit_code())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -99,14 +115,7 @@ pub struct RealProcessRunner;
 impl ProcessRunner for RealProcessRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandResult> {
         let mut command = Command::new(&spec.program);
-        command.args(&spec.args);
-        for key in &spec.env_remove {
-            command.env_remove(key);
-        }
-        command.envs(&spec.env);
-        if let Some(cwd) = &spec.cwd {
-            command.current_dir(cwd);
-        }
+        configure_command(&mut command, spec);
         if spec.inherit_stdio {
             let status = command
                 .stdin(Stdio::inherit())
@@ -116,6 +125,7 @@ impl ProcessRunner for RealProcessRunner {
                 .map_err(|error| command_error(&spec.program, error))?;
             Ok(CommandResult {
                 code: status.code(),
+                signal: exit_signal(&status),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             })
@@ -126,11 +136,60 @@ impl ProcessRunner for RealProcessRunner {
                 .map_err(|error| command_error(&spec.program, error))?;
             Ok(CommandResult {
                 code: output.status.code(),
+                signal: exit_signal(&output.status),
                 stdout: output.stdout,
                 stderr: output.stderr,
             })
         }
     }
+
+    fn exec(&self, spec: &CommandSpec) -> Result<i32> {
+        let mut command = Command::new(&spec.program);
+        configure_command(&mut command, spec);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let error = command.exec();
+            Err(command_error(&spec.program, error))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(self.run(spec)?.code.unwrap_or(1))
+        }
+    }
+}
+
+fn configure_command(command: &mut Command, spec: &CommandSpec) {
+    command.args(&spec.args);
+    for key in &spec.env_remove {
+        command.env_remove(key);
+    }
+    command.envs(&spec.env);
+    if let Some(cwd) = &spec.cwd {
+        command.current_dir(cwd);
+    }
+    if spec.inherit_stdio {
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+    } else {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+    }
+}
+
+#[cfg(unix)]
+fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
 
 fn command_error(program: &Path, error: std::io::Error) -> ManagerError {
@@ -139,4 +198,19 @@ fn command_error(program: &Path, error: std::io::Error) -> ManagerError {
 
 pub fn os(value: impl AsRef<OsStr>) -> OsString {
     value.as_ref().to_os_string()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{CommandSpec, ProcessRunner, RealProcessRunner};
+
+    #[test]
+    fn unix_signal_exit_preserves_shell_status_semantics() {
+        let result = RealProcessRunner
+            .run(&CommandSpec::captured("/bin/sh").args(["-c", "kill -TERM $$"]))
+            .unwrap();
+        assert_eq!(result.code, None);
+        assert_eq!(result.signal, Some(15));
+        assert_eq!(result.exit_code(), 143);
+    }
 }

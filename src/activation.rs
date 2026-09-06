@@ -10,10 +10,12 @@ use crate::state::{
     Clock, ManagerPaths, PrepareLock, PreparedState, StateStore, remove_file_if_exists,
     remove_managed_tree, write_new_synced,
 };
+#[cfg(not(windows))]
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -92,6 +94,8 @@ pub struct UserPathReport {
     pub status: &'static str,
     pub changed: bool,
     pub command_resolution: CommandResolution,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
 }
 
 #[cfg(windows)]
@@ -203,6 +207,8 @@ pub fn plug(
             "staged activation shim differs from the manager executable",
         ));
     }
+    #[cfg(unix)]
+    verify_staged_shim(&staged, runner)?;
 
     let active = ActivationState {
         schema: 2,
@@ -284,6 +290,7 @@ pub fn purge(manager_root: Option<PathBuf>) -> Result<PurgeReport> {
     deactivate_locked(&paths)?;
     for directory in [
         &paths.artifacts,
+        &paths.shell,
         &paths.manifests,
         &paths.downloads,
         &paths.sources,
@@ -408,6 +415,333 @@ pub fn inspect_command_resolution(
     }
 }
 
+#[cfg(not(windows))]
+pub fn prioritize_posix_user_path(activation: &ActivationReport) -> Result<UserPathReport> {
+    let home = posix_home()?;
+    prioritize_posix_user_path_in_home(activation, &home)
+}
+
+#[cfg(not(windows))]
+fn prioritize_posix_user_path_in_home(
+    activation: &ActivationReport,
+    home: &Path,
+) -> Result<UserPathReport> {
+    let manager_root = activation.managed_bin.parent().ok_or_else(|| {
+        ManagerError::new("unsafe_manager_root", "managed bin has no manager root")
+    })?;
+    let fragment = manager_root.join("shell/csa.sh");
+    let fish_fragment = manager_root.join("shell/csa.fish");
+    let profiles = posix_profiles_for_home(home)?;
+    let fragment_contents = posix_fragment(&activation.managed_bin);
+
+    let mut changes = Vec::with_capacity(profiles.len());
+    for (path, shell) in profiles {
+        let before = read_owned_text(&path)?;
+        let fragment_for_shell = if shell == "fish" {
+            &fish_fragment
+        } else {
+            &fragment
+        };
+        let block = posix_profile_block(fragment_for_shell, shell);
+        let after = replace_posix_block(before.as_deref().unwrap_or_default(), &block)?;
+        changes.push((path, before, after));
+    }
+    write_owned_text(&fragment, fragment_contents.as_bytes())?;
+    write_owned_text(
+        &fish_fragment,
+        format!(
+            "set -gx PATH {} $PATH;\n",
+            shell_quote(&activation.managed_bin)
+        )
+        .as_bytes(),
+    )?;
+    let mut changed = false;
+    for (path, before, after) in changes {
+        if before.as_deref() != Some(after.as_str()) {
+            write_owned_text(&path, after.as_bytes())?;
+            changed = true;
+        }
+    }
+
+    let verification_path = prepend_path(&activation.managed_bin, std::env::var_os("PATH"))?;
+    let paths = ManagerPaths::resolve(Some(manager_root.to_path_buf()))?;
+    let command_resolution = inspect_command_resolution(&paths, Some(&verification_path));
+    if !command_resolution.resolves_to_managed_shim {
+        return Ok(UserPathReport {
+            status: "manual_required",
+            changed,
+            command_resolution,
+            instruction: Some(posix_activation_instruction(&activation.managed_bin)),
+        });
+    }
+    Ok(UserPathReport {
+        status: "persisted_for_new_shell",
+        changed,
+        command_resolution,
+        instruction: Some(posix_activation_instruction(&activation.managed_bin)),
+    })
+}
+
+#[cfg(not(windows))]
+pub fn remove_posix_user_path(managed_bin: &Path) -> Result<bool> {
+    let home = posix_home()?;
+    remove_posix_user_path_in_home(managed_bin, &home)
+}
+
+#[cfg(not(windows))]
+fn remove_posix_user_path_in_home(managed_bin: &Path, home: &Path) -> Result<bool> {
+    managed_bin.parent().ok_or_else(|| {
+        ManagerError::new("unsafe_manager_root", "managed bin has no manager root")
+    })?;
+    let mut changed = false;
+    for (path, _) in posix_profiles_for_home(home)? {
+        let Some(before) = read_owned_text(&path)? else {
+            continue;
+        };
+        let after = remove_posix_block(&before, "")?;
+        if after != before {
+            write_owned_text(&path, after.as_bytes())?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(not(windows))]
+pub fn shell_env(manager_root: Option<PathBuf>, shell: &str) -> Result<String> {
+    let paths = ManagerPaths::resolve(manager_root)?;
+    let shell = normalize_shell(shell)?;
+    Ok(match shell {
+        "fish" => format!("set -gx PATH {} $PATH;", shell_quote(&paths.bin)),
+        _ => format!("export PATH={}:$PATH;", shell_quote(&paths.bin)),
+    })
+}
+
+#[cfg(not(windows))]
+pub fn shell_init(manager_root: Option<PathBuf>, shell: &str) -> Result<String> {
+    let paths = ManagerPaths::resolve(manager_root)?;
+    let shell = normalize_shell(shell)?;
+    let fragment = if shell == "fish" {
+        paths.shell.join("csa.fish")
+    } else {
+        paths.shell.join("csa.sh")
+    };
+    Ok(match shell {
+        "fish" => format!(
+            "if test -r {}; source {}; end",
+            shell_quote(&fragment),
+            shell_quote(&fragment)
+        ),
+        _ => format!(
+            "[ -r {} ] && . {}",
+            shell_quote(&fragment),
+            shell_quote(&fragment)
+        ),
+    })
+}
+
+#[cfg(not(windows))]
+fn normalize_shell(shell: &str) -> Result<&str> {
+    match shell {
+        "sh" | "bash" | "zsh" | "fish" => Ok(shell),
+        _ => Err(ManagerError::new(
+            "invalid_shell",
+            "supported shells are sh, bash, zsh, and fish",
+        )),
+    }
+}
+
+#[cfg(not(windows))]
+fn posix_home() -> Result<PathBuf> {
+    let home = BaseDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .ok_or_else(|| {
+            ManagerError::new(
+                "home_directory_unavailable",
+                "cannot resolve the POSIX home directory for shell activation",
+            )
+        })?;
+    crate::state::require_utf8_path(&home, "home directory")?;
+    Ok(home)
+}
+
+#[cfg(not(windows))]
+fn posix_profiles_for_home(home: &Path) -> Result<Vec<(PathBuf, &'static str)>> {
+    crate::state::require_utf8_path(home, "home directory")?;
+    Ok(vec![
+        (home.join(".profile"), "sh"),
+        (home.join(".bashrc"), "bash"),
+        (home.join(".zshrc"), "zsh"),
+        (home.join(".config/fish/conf.d/csa.fish"), "fish"),
+    ])
+}
+
+#[cfg(not(windows))]
+fn posix_fragment(managed_bin: &Path) -> String {
+    format!("export PATH={}:$PATH\n", shell_quote(managed_bin))
+}
+
+#[cfg(not(windows))]
+fn posix_profile_block(fragment: &Path, shell: &str) -> String {
+    let command = if shell == "fish" {
+        format!(
+            "if test -r {}; source {}; end",
+            shell_quote(fragment),
+            shell_quote(fragment)
+        )
+    } else {
+        format!(
+            "[ -r {} ] && . {}",
+            shell_quote(fragment),
+            shell_quote(fragment)
+        )
+    };
+    format!("# >>> CSA managed PATH >>>\n{command}\n# <<< CSA managed PATH <<<")
+}
+
+#[cfg(not(windows))]
+fn posix_activation_instruction(managed_bin: &Path) -> String {
+    format!(
+        "Open a new shell, or run export PATH={}:$PATH; then use command -v codex and codex --version.",
+        shell_quote(managed_bin)
+    )
+}
+
+#[cfg(not(windows))]
+fn prepend_path(directory: &Path, current: Option<OsString>) -> Result<OsString> {
+    let mut entries = vec![directory.to_path_buf()];
+    if let Some(current) = current {
+        entries.extend(std::env::split_paths(&current));
+    }
+    std::env::join_paths(entries)
+        .map_err(|error| ManagerError::new("path_activation_failed", error.to_string()))
+}
+
+#[cfg(not(windows))]
+fn shell_quote(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(not(windows))]
+fn read_owned_text(path: &Path) -> Result<Option<String>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(ManagerError::new(
+                "unsafe_profile_path",
+                format!("shell profile is not a regular file: {}", path.display()),
+            ))
+        }
+        Ok(_) => {
+            let bytes = fs::read(path).map_err(|error| {
+                ManagerError::io(&format!("read shell profile {}", path.display()), error)
+            })?;
+            String::from_utf8(bytes).map(Some).map_err(|_| {
+                ManagerError::new(
+                    "non_utf8_path",
+                    format!("shell profile is not UTF-8: {}", path.display()),
+                )
+            })
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ManagerError::io(
+            &format!("inspect shell profile {}", path.display()),
+            error,
+        )),
+    }
+}
+
+#[cfg(not(windows))]
+fn write_owned_text(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            ManagerError::io(
+                &format!("create shell profile directory {}", parent.display()),
+                error,
+            )
+        })?;
+    }
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err(ManagerError::new(
+            "unsafe_profile_path",
+            format!("shell profile is not a regular file: {}", path.display()),
+        ));
+    }
+    let existing_permissions = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let staging = path.with_file_name(format!(
+        ".{}.csa-staging-{}",
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("profile"),
+        std::process::id()
+    ));
+    remove_file_if_exists(&staging)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .map_err(|error| ManagerError::io(&format!("create {}", staging.display()), error))?;
+    if let Some(permissions) = existing_permissions {
+        fs::set_permissions(&staging, permissions).map_err(|error| {
+            let _ = fs::remove_file(&staging);
+            ManagerError::io(
+                &format!("preserve shell profile permissions {}", path.display()),
+                error,
+            )
+        })?;
+    }
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&staging);
+        return Err(ManagerError::io(
+            &format!("write {}", staging.display()),
+            error,
+        ));
+    }
+    drop(file);
+    fs::rename(&staging, path).map_err(|error| {
+        ManagerError::io(&format!("publish shell profile {}", path.display()), error)
+    })
+}
+
+#[cfg(not(windows))]
+fn replace_posix_block(existing: &str, block: &str) -> Result<String> {
+    let stripped = remove_posix_block(existing, block)?;
+    let mut result = stripped.trim_end_matches('\n').to_owned();
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    result.push_str(block);
+    result.push('\n');
+    Ok(result)
+}
+
+#[cfg(not(windows))]
+fn remove_posix_block(existing: &str, _: &str) -> Result<String> {
+    const START: &str = "# >>> CSA managed PATH >>>";
+    const END: &str = "# <<< CSA managed PATH <<<";
+    let mut result = String::with_capacity(existing.len());
+    let mut remainder = existing;
+    while let Some(start) = remainder.find(START) {
+        result.push_str(&remainder[..start]);
+        let after_start = &remainder[start..];
+        let end = after_start.find(END).ok_or_else(|| {
+            ManagerError::new(
+                "invalid_profile_block",
+                "CSA shell profile marker is incomplete",
+            )
+        })?;
+        let after_end = &after_start[end + END.len()..];
+        remainder = after_end.strip_prefix('\n').unwrap_or(after_end);
+    }
+    result.push_str(remainder);
+    Ok(result)
+}
+
 #[cfg(windows)]
 pub fn prioritize_windows_user_path(
     activation: &ActivationReport,
@@ -507,6 +841,7 @@ pub fn prioritize_windows_user_path(
         status: "verified",
         changed: update.changed,
         command_resolution,
+        instruction: None,
     })
 }
 
@@ -822,12 +1157,13 @@ pub fn forward_current_shim(args: Vec<OsString>, runner: &dyn ProcessRunner) -> 
             .as_deref()
             .map(|value| path_without(bin, value))
             .transpose()?;
-        return forward_shim(
+        return forward_shim_impl(
             &paths,
             args,
             filtered_path.as_deref(),
             &shim_path(&paths),
             runner,
+            true,
         );
     }
     if bin.file_name() != Some(OsStr::new("bin")) {
@@ -841,7 +1177,7 @@ pub fn forward_current_shim(args: Vec<OsString>, runner: &dyn ProcessRunner) -> 
         .ok_or_else(|| ManagerError::new("unsafe_shim_path", "manager bin has no parent"))?;
     let paths = ManagerPaths::resolve(Some(root.to_path_buf()))?;
     let path_value = std::env::var_os("PATH");
-    forward_shim(&paths, args, path_value.as_deref(), &current, runner)
+    forward_shim_impl(&paths, args, path_value.as_deref(), &current, runner, true)
 }
 
 pub fn forward_shim(
@@ -850,6 +1186,17 @@ pub fn forward_shim(
     path_value: Option<&OsStr>,
     current_shim: &Path,
     runner: &dyn ProcessRunner,
+) -> Result<i32> {
+    forward_shim_impl(paths, args, path_value, current_shim, runner, false)
+}
+
+fn forward_shim_impl(
+    paths: &ManagerPaths,
+    args: Vec<OsString>,
+    path_value: Option<&OsStr>,
+    current_shim: &Path,
+    runner: &dyn ProcessRunner,
+    replace_process: bool,
 ) -> Result<i32> {
     let selection = match PrepareLock::acquire(paths) {
         Ok(_lock) => select_shim_target(paths, path_value, current_shim, runner)?,
@@ -891,8 +1238,12 @@ pub fn forward_shim(
     } else {
         official_command(command, &selection.official)?
     };
-    let result = runner.run(&command)?;
-    Ok(result.code.unwrap_or(1))
+    let result = if replace_process {
+        return runner.exec(&command);
+    } else {
+        runner.run(&command)?
+    };
+    Ok(result.exit_code())
 }
 
 pub fn select_shim_target(
@@ -1180,6 +1531,38 @@ fn copy_synced(source: &Path, destination: &Path) -> Result<()> {
         .map_err(|error| ManagerError::io("sync staged activation shim", error))
 }
 
+#[cfg(unix)]
+fn verify_staged_shim(path: &Path, runner: &dyn ProcessRunner) -> Result<()> {
+    let result = runner
+        .run(&CommandSpec::captured(path).arg("--version"))
+        .map_err(|error| {
+            if error.message.to_ascii_lowercase().contains("permission denied") {
+                ManagerError::new(
+                    "noexec_filesystem",
+                    format!(
+                        "the executable filesystem rejected {}: choose an executable-capable --manager-root",
+                        path.display()
+                    ),
+                )
+            } else {
+                error
+            }
+        })?;
+    if result.code != Some(0) {
+        return Err(ManagerError::new(
+            "shim_not_runnable",
+            format!(
+                "staged CSA shim did not complete --version: {}",
+                result.signal.map_or_else(
+                    || format!("{:?}", result.code),
+                    |signal| format!("signal {signal}"),
+                )
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn owned_path_exists(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -1205,6 +1588,7 @@ fn managed_data_exists(paths: &ManagerPaths) -> Result<bool> {
     }
     for directory in [
         &paths.artifacts,
+        &paths.shell,
         &paths.manifests,
         &paths.downloads,
         &paths.sources,
@@ -1264,4 +1648,118 @@ fn sync_directory(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn sync_directory(_: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::{
+        ActivationReport, CommandResolution, prioritize_posix_user_path_in_home,
+        remove_posix_block, remove_posix_user_path_in_home, replace_posix_block, shell_quote,
+        verify_staged_shim,
+    };
+    use crate::error::{ManagerError, Result};
+    use crate::process::{CommandResult, CommandSpec, ProcessRunner};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn posix_profile_block_is_idempotent_and_reversible() {
+        let existing = "export EDITOR=vi\n";
+        let block = "# >>> CSA managed PATH >>>\n[ -r '/tmp/csa/shell/csa.sh' ] && . '/tmp/csa/shell/csa.sh'\n# <<< CSA managed PATH <<<";
+        let once = replace_posix_block(existing, block).unwrap();
+        let twice = replace_posix_block(&once, block).unwrap();
+        assert_eq!(once, twice);
+        assert_eq!(remove_posix_block(&twice, "").unwrap(), existing);
+    }
+
+    #[test]
+    fn incomplete_posix_profile_block_fails_closed() {
+        let error = remove_posix_block("# >>> CSA managed PATH >>>\n", "").unwrap_err();
+        assert_eq!(error.code, "invalid_profile_block");
+    }
+
+    #[test]
+    fn posix_shell_quote_escapes_single_quotes() {
+        assert_eq!(
+            shell_quote(Path::new("/tmp/it's-csa/bin")),
+            "'/tmp/it'\\''s-csa/bin'"
+        );
+    }
+
+    #[test]
+    fn posix_profile_files_are_idempotent_reversible_and_preserve_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("csa-posix-profile-{}-{unique}", std::process::id()));
+        let home = root.join("home");
+        let manager_root = root.join("manager");
+        let managed_bin = manager_root.join("bin");
+        let shim = managed_bin.join("codex");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&managed_bin).unwrap();
+        fs::write(home.join(".profile"), b"export EDITOR=vi\n").unwrap();
+        let mut profile_permissions = fs::metadata(home.join(".profile")).unwrap().permissions();
+        profile_permissions.set_mode(0o600);
+        fs::set_permissions(home.join(".profile"), profile_permissions).unwrap();
+        fs::write(&shim, b"#!/bin/sh\nexit 0\n").unwrap();
+        let mut shim_permissions = fs::metadata(&shim).unwrap().permissions();
+        shim_permissions.set_mode(0o755);
+        fs::set_permissions(&shim, shim_permissions).unwrap();
+
+        let activation = ActivationReport {
+            status: "plugged",
+            effective: false,
+            managed_bin: managed_bin.clone(),
+            shim_path: shim,
+            command_resolution: CommandResolution {
+                managed_bin_on_path: false,
+                resolved_codex: None,
+                resolves_to_managed_shim: false,
+            },
+            state: None,
+            reason: None,
+        };
+        let first = prioritize_posix_user_path_in_home(&activation, &home).unwrap();
+        assert_eq!(first.status, "persisted_for_new_shell");
+        assert!(first.changed);
+        let profile = home.join(".profile");
+        let first_contents = fs::read_to_string(&profile).unwrap();
+        assert!(first_contents.contains("export EDITOR=vi"));
+        assert!(first_contents.contains("CSA managed PATH"));
+        assert_eq!(
+            fs::metadata(&profile).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let second = prioritize_posix_user_path_in_home(&activation, &home).unwrap();
+        assert_eq!(second.status, "persisted_for_new_shell");
+        assert!(!second.changed);
+        assert_eq!(fs::read_to_string(&profile).unwrap(), first_contents);
+
+        assert!(remove_posix_user_path_in_home(&managed_bin, &home).unwrap());
+        assert_eq!(fs::read_to_string(profile).unwrap(), "export EDITOR=vi\n");
+        assert!(!remove_posix_user_path_in_home(&managed_bin, &home).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    struct PermissionDeniedRunner;
+
+    impl ProcessRunner for PermissionDeniedRunner {
+        fn run(&self, _: &CommandSpec) -> Result<CommandResult> {
+            Err(ManagerError::new("io_error", "Permission denied"))
+        }
+    }
+
+    #[test]
+    fn staged_shim_reports_noexec_as_a_dedicated_error() {
+        let error =
+            verify_staged_shim(Path::new("/tmp/csa-staged"), &PermissionDeniedRunner).unwrap_err();
+        assert_eq!(error.code, "noexec_filesystem");
+    }
 }
