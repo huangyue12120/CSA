@@ -112,7 +112,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
-          cargo test --all-targets
+          cargo test --all-targets -- --test-threads=1
 
       - name: Validate npm and release tooling
         run: |

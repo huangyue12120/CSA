@@ -276,7 +276,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
-          cargo test --all-targets
+          cargo test --all-targets -- --test-threads=1
 
       - name: Linux runtime and POSIX activation acceptance
         if: runner.os == 'Linux' && (needs.changes.outputs.manager == 'true' || needs.changes.outputs.workflows == 'true')
@@ -393,7 +393,7 @@ jobs:
           toolchain: "1.95.0"
       - name: Native Rust lane
         run: |
-          cargo test --all-targets --target ${{ matrix.target }}
+          cargo test --all-targets --target ${{ matrix.target }} -- --test-threads=1
           cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
           cargo build --release --target ${{ matrix.target }}
       - name: Linux runtime and POSIX activation acceptance
