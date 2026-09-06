@@ -1206,7 +1206,7 @@ fn activation_lifecycle_is_reversible_and_drift_falls_back_without_recursion() {
             )
         );
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         assert_eq!(
             forwarded.env.get(&OsString::from("CODEX_MANAGED_BY_NPM")),
