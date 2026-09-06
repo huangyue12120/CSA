@@ -1272,16 +1272,22 @@ fn activation_lifecycle_is_reversible_and_drift_falls_back_without_recursion() {
         .into_iter()
         .find(|command| command.args == ["--locked"].map(OsString::from))
         .unwrap();
+    #[cfg(any(windows, target_os = "linux"))]
     assert_eq!(
         locked_fallback.program,
         fixture.native.canonicalize().unwrap()
     );
+    #[cfg(not(any(windows, target_os = "linux")))]
+    assert_eq!(locked_fallback.program, fallback.canonicalize().unwrap());
 
     runner.set_version("9.9.9");
     fixture.set_official_package_version("9.9.9");
     let selection = select_shim_target(&paths, Some(&fallback_path), &shim, &runner).unwrap();
     assert_eq!(selection.mode, "official");
+    #[cfg(any(windows, target_os = "linux"))]
     assert_eq!(selection.target, fixture.native.canonicalize().unwrap());
+    #[cfg(not(any(windows, target_os = "linux")))]
+    assert_eq!(selection.target, fallback.canonicalize().unwrap());
     assert!(
         selection
             .fallback_reason
@@ -1604,7 +1610,10 @@ fn schema_one_state_falls_back_and_is_replaced_only_by_reinstall() {
     .unwrap();
     let upgraded: Value = serde_json::from_slice(&fs::read(&paths.state).unwrap()).unwrap();
     assert_eq!(upgraded["schema"], Value::from(2));
+    #[cfg(any(windows, target_os = "linux"))]
     assert!(upgraded["official"]["runtime"].is_object());
+    #[cfg(not(any(windows, target_os = "linux")))]
+    assert!(upgraded["official"]["runtime"].is_null());
     assert!(uninstall(Some(root)).unwrap().changed);
 }
 
