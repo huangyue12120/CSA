@@ -416,6 +416,24 @@ struct PackageManifest {
     version: String,
 }
 
+fn platform_package_manifest_matches(
+    manifest: &PackageManifest,
+    platform: RuntimePlatform,
+    version: &str,
+) -> bool {
+    if manifest.name == platform.package_name && manifest.version == version {
+        return true;
+    }
+
+    // npm publishes the platform tarball as @openai/codex and uses the
+    // platform suffix in its version. The optional dependency alias keeps
+    // the platform package directory name separate from that manifest name.
+    let Some(suffix) = platform.package_name.strip_prefix("@openai/codex-") else {
+        return false;
+    };
+    manifest.name == "@openai/codex" && manifest.version == format!("{version}-{suffix}")
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PackageLayout {
@@ -487,7 +505,7 @@ fn validate_runtime(
         || marker.path_dir != "codex-path"
         || marker.version != package_json.version
         || platform_package_json.as_ref().is_some_and(|manifest| {
-            manifest.name != platform.package_name || manifest.version != marker.version
+            !platform_package_manifest_matches(manifest, platform, &marker.version)
         })
     {
         return Err(ManagerError::new(
@@ -1184,5 +1202,88 @@ mod tests {
         );
         assert_eq!(official.runtime.unwrap().files.len(), 6);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_runtime_discovery_supports_npm_platform_alias_metadata() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "csa-linux-npm-alias-{}-{unique}",
+            std::process::id()
+        ));
+        let (launcher, native, package) = write_linux_runtime(
+            &root,
+            "npm",
+            "1.2.3",
+            crate::platform::selected_runtime_artifact_target(),
+        );
+        let platform_root = package
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        let platform = super::runtime_platform().unwrap();
+        let suffix = platform
+            .package_name
+            .strip_prefix("@openai/codex-")
+            .unwrap();
+        fs::write(
+            platform_root.join("package.json"),
+            format!(r#"{{"name":"@openai/codex","version":"1.2.3-{suffix}"}}"#),
+        )
+        .unwrap();
+
+        let official = detect_official(&VersionRunner, Some(&launcher), None, &[]).unwrap();
+        assert_eq!(
+            official.native.unwrap().path,
+            native.canonicalize().unwrap()
+        );
+        assert_eq!(
+            official.runtime.unwrap().package_root,
+            package.canonicalize().unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn platform_package_metadata_requires_matching_name_version_and_platform() {
+        for suffix in ["linux-x64", "linux-arm64", "win32-x64", "win32-arm64"] {
+            let package_name = match suffix {
+                "linux-x64" => "@openai/codex-linux-x64",
+                "linux-arm64" => "@openai/codex-linux-arm64",
+                "win32-x64" => "@openai/codex-win32-x64",
+                _ => "@openai/codex-win32-arm64",
+            };
+            let platform = super::RuntimePlatform {
+                package_name,
+                target: "unused",
+                entrypoint: "unused",
+                required_files: &[],
+            };
+            for (name, version, expected) in [
+                (package_name, "1.2.3".to_owned(), true),
+                ("@openai/codex", format!("1.2.3-{suffix}"), true),
+                (package_name, "1.2.4".to_owned(), false),
+                ("@openai/codex", format!("1.2.4-{suffix}"), false),
+                ("@openai/codex", "1.2.3-other-platform".to_owned(), false),
+                ("@openai/codex", "1.2.3".to_owned(), false),
+                ("unrelated", format!("1.2.3-{suffix}"), false),
+            ] {
+                let manifest = super::PackageManifest {
+                    name: name.to_owned(),
+                    version,
+                };
+                assert_eq!(
+                    super::platform_package_manifest_matches(&manifest, platform, "1.2.3"),
+                    expected,
+                    "{name} {} for {suffix}",
+                    manifest.version,
+                );
+            }
+        }
     }
 }
