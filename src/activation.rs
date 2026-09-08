@@ -1536,7 +1536,7 @@ fn verify_staged_shim(path: &Path, runner: &dyn ProcessRunner) -> Result<()> {
     let result = runner
         .run(&CommandSpec::captured(path).arg("--version"))
         .map_err(|error| {
-            if error.message.to_ascii_lowercase().contains("permission denied") {
+            if error.is_permission_denied() {
                 ManagerError::new(
                     "noexec_filesystem",
                     format!(
@@ -1752,7 +1752,7 @@ mod tests {
 
     impl ProcessRunner for PermissionDeniedRunner {
         fn run(&self, _: &CommandSpec) -> Result<CommandResult> {
-            Err(ManagerError::new("io_error", "Permission denied"))
+            Err(ManagerError::new("io_error", "PERMISSION DENIED"))
         }
     }
 

@@ -160,7 +160,14 @@ case "$1" in
   -e)
     case "$2" in
       *JSON.stringify*)
-        printf '{"args":["space value","--literal=$()"],"cwd":"%s","marker":"%s"}' "$PWD" "$CSA_LAUNCHER_MARKER"
+        shift 3
+        printf '{"args":['
+        separator=
+        for argument in "$@"; do
+          printf '%s"%s"' "$separator" "$argument"
+          separator=,
+        done
+        printf '],"cwd":"%s","marker":"%s"}' "$PWD" "$CSA_LAUNCHER_MARKER"
         printf 'stderr-ok' >&2
         ;;
       *setInterval*)

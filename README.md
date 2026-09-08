@@ -80,7 +80,23 @@ command -v codex
 codex --version
 ```
 
-Use `csa shell env zsh`, `csa shell env sh`, or `csa shell env fish` for the active shell. `csa shell init <shell>` prints the profile fragment that sources the manager-owned activation file. Check aliases and functions with `type -a codex`; they are separate from `PATH` and must be resolved by the shell.
+`csa shell env <shell>` only prints a command; it does not modify the current shell. Evaluate it with the syntax for the active shell:
+
+```sh
+# sh
+eval "$(csa shell env sh)"
+# bash
+eval "$(csa shell env bash)"
+# zsh
+eval "$(csa shell env zsh)"
+```
+
+```fish
+# fish
+eval (csa shell env fish)
+```
+
+`csa shell init <shell>` prints the profile fragment that sources the manager-owned activation file. Check aliases and functions with `type -a codex`; they are separate from `PATH` and must be resolved by the shell.
 
 ### 2. Diagnose and install
 

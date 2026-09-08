@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -33,7 +33,7 @@ function executable(pathname, contents) {
 }
 
 const manager = path.resolve(process.argv[2]);
-const temporary = mkdtempSync(path.join(os.tmpdir(), 'csa-linux-runtime-'));
+const temporary = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'csa-linux-runtime-')));
 try {
   const version = '1.2.3';
   const target = process.arch === 'x64' ? 'x86_64-unknown-linux-musl' : 'aarch64-unknown-linux-musl';

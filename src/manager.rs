@@ -560,8 +560,7 @@ fn verify_artifact_runnable(
 ) -> Result<()> {
     let command = patched_command(CommandSpec::captured(artifact).arg("--version"), official)?;
     let result = runner.run(&command).map_err(|error| {
-        if error.message.contains("Permission denied") || error.message.contains("permission denied")
-        {
+        if error.is_permission_denied() {
             ManagerError::new(
                 "noexec_filesystem",
                 format!(

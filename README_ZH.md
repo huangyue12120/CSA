@@ -80,7 +80,23 @@ command -v codex
 codex --version
 ```
 
-根据当前 Shell 使用 `csa shell env zsh`、`csa shell env sh` 或 `csa shell env fish`。`csa shell init <shell>` 会输出 source Manager 自有激活文件的 profile fragment。使用 `type -a codex` 检查 alias 和 function；它们不属于 `PATH`，需要由 Shell 单独处理。
+`csa shell env <shell>` 只会输出命令，不会修改当前 Shell。请根据当前 Shell 使用对应的求值语法：
+
+```sh
+# sh
+eval "$(csa shell env sh)"
+# bash
+eval "$(csa shell env bash)"
+# zsh
+eval "$(csa shell env zsh)"
+```
+
+```fish
+# fish
+eval (csa shell env fish)
+```
+
+`csa shell init <shell>` 会输出 source Manager 自有激活文件的 profile fragment。使用 `type -a codex` 检查 alias 和 function；它们不属于 `PATH`，需要由 Shell 单独处理。
 
 ### 2. 诊断并安装
 

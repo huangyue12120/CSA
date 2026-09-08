@@ -20,6 +20,12 @@ impl ManagerError {
     pub fn io(context: &str, error: std::io::Error) -> Self {
         Self::new("io_error", format!("{context}: {error}"))
     }
+
+    pub(crate) fn is_permission_denied(&self) -> bool {
+        self.message
+            .to_ascii_lowercase()
+            .contains("permission denied")
+    }
 }
 
 impl fmt::Display for ManagerError {

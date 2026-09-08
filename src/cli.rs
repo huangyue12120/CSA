@@ -362,6 +362,7 @@ fn parse_shell(mut args: VecDeque<OsString>, explicit_json: &mut bool) -> Result
     let action = match unicode_flag(&action)? {
         "init" => true,
         "env" => false,
+        "--help" | "-h" => return Ok(Cli::Help),
         value => {
             return Err(ManagerError::new(
                 "invalid_cli",
@@ -375,6 +376,9 @@ fn parse_shell(mut args: VecDeque<OsString>, explicit_json: &mut bool) -> Result
     let shell = shell
         .to_str()
         .ok_or_else(|| ManagerError::new("invalid_cli", "shell name must be valid Unicode"))?;
+    if matches!(shell, "--help" | "-h") {
+        return Ok(Cli::Help);
+    }
     let mut manager_root = None;
     while let Some(flag) = args.pop_front() {
         match unicode_flag(&flag)? {
@@ -564,6 +568,17 @@ mod tests {
         assert!(usage(Language::English).contains("Global option:"));
         assert!(usage(Language::Chinese).contains("全局选项："));
         assert!(usage(Language::Chinese).contains("csa install [--yes]"));
+    }
+
+    #[test]
+    fn shell_help_is_accepted_before_positional_arguments() {
+        assert!(matches!(parse(&["shell", "--help"]).unwrap(), Cli::Help));
+        assert!(matches!(parse(&["shell", "-h"]).unwrap(), Cli::Help));
+        assert!(matches!(
+            parse(&["shell", "init", "--help"]).unwrap(),
+            Cli::Help
+        ));
+        assert!(matches!(parse(&["shell", "env", "-h"]).unwrap(), Cli::Help));
     }
 
     fn invocation(args: &[&str]) -> crate::error::Result<Invocation> {

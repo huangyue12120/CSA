@@ -203,7 +203,7 @@ type -a codex
 codex --version
 ```
 
-Use `csa shell env zsh`, `csa shell env sh`, or `csa shell env fish` for another shell. `csa shell init <shell>` prints the profile fragment. Aliases and functions can override `PATH`; inspect them with `type -a codex`.
+`csa shell env <shell>` only prints a command; it does not modify the caller's environment. Use `eval "$(csa shell env sh)"`, `eval "$(csa shell env bash)"`, or `eval "$(csa shell env zsh)"` for sh, bash, or zsh, and use `eval (csa shell env fish)` for fish. `csa shell init <shell>` prints the profile fragment. Aliases and functions can override `PATH`; inspect them with `type -a codex`.
 
 Existing applications keep the environment they inherited at startup. Close every terminal and fully quit terminal hosts such as VS Code after installation; opening another integrated terminal inside the same window is not enough.
 

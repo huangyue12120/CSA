@@ -23,9 +23,11 @@ csa [--json] <command> [options]
 | Inspect | `csa status [--manager-root PATH]` |
 | Uninstall | `csa uninstall [--manager-root PATH]` |
 | Remove all managed data | `csa purge [--manager-root PATH]` |
-| Shell profile fragment | `csa shell init <sh|bash|zsh|fish> [--manager-root PATH]` |
-| Current shell PATH command | `csa shell env <sh|bash|zsh|fish> [--manager-root PATH]` |
+| Shell profile fragment | `csa shell init <shell> [--manager-root PATH]` |
+| Current shell PATH command | `csa shell env <shell> [--manager-root PATH]` |
 | Run in isolation | `csa exec --isolated [--manager-root PATH] --codex-home PATH --cwd PATH --logs-dir PATH --state-dir PATH --record PATH [--npm-prefix PATH] -- [CODEX_ARGS...]` |
+
+The supported shell names are `sh`, `bash`, `zsh`, and `fish`.
 
 ### Install modes
 
@@ -130,7 +132,7 @@ Normal shim launches inherit the current working directory, terminal, arguments,
 
 On Windows, explicit `install` and `plug` place the managed `bin` directory first in the current user's persistent `PATH`. If the next process's machine-plus-user ordering still selects another Codex, CSA requests UAC, installs `%ProgramFiles%\DSLZL\CSA\bin\codex.exe`, and places that protected dispatcher first in the machine `PATH`. It never edits package-manager launchers or shell profiles. Verification requires the CSA path to resolve first and one `codex --version` result in the form `codex-cli X.Y.Z (CSA <compat-id>)`. Existing applications keep their inherited environment until every terminal host is restarted.
 
-On Linux and other POSIX systems, `install` and `plug` write only a CSA-owned marker block and Manager-owned shell fragment. Bash, zsh, and sh use their profile files; fish uses `conf.d`. The block is replaced idempotently and removed by `uninstall` or `purge`. Use `eval "$(csa shell env bash)"` for the current Bash process, or use the matching shell name. A profile that cannot be safely updated produces `manual_required` and the install status `prepared_but_inactive`.
+On Linux and other POSIX systems, `install` and `plug` write only a CSA-owned marker block and Manager-owned shell fragment. Bash, zsh, and sh use their profile files; fish uses `conf.d`. The block is replaced idempotently and removed by `uninstall` or `purge`. `csa shell env <shell>` only prints a command; it does not modify the caller's environment. Evaluate it with `eval "$(csa shell env sh)"`, `eval "$(csa shell env bash)"`, or `eval "$(csa shell env zsh)"` for sh, bash, or zsh, and with `eval (csa shell env fish)` for fish. A profile that cannot be safely updated produces `manual_required` and the install status `prepared_but_inactive`.
 
 `exec --isolated` requires separate absolute paths for `CODEX_HOME`, cwd, logs, state, and its evidence record. It does not create a shim or persist a `PATH` change.
 

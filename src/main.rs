@@ -262,13 +262,13 @@ fn activate_user_path(
         let _ = runner;
         match csa::activation::prioritize_posix_user_path(&report.activation) {
             Ok(user_path) => report.user_path = Some(user_path),
-            Err(_error) => {
+            Err(error) => {
                 report.user_path = Some(csa::activation::UserPathReport {
                     status: "manual_required",
                     changed: false,
                     command_resolution: report.activation.command_resolution.clone(),
                     instruction: Some(format!(
-                        "Run export PATH='{}':$PATH in the current shell, then use command -v codex and codex --version.",
+                        "Persistent shell activation failed: {error}. Run export PATH='{}':$PATH in the current shell, then use command -v codex and codex --version.",
                         report.activation.managed_bin.display()
                     )),
                 });
