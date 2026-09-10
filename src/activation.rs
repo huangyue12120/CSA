@@ -621,8 +621,9 @@ fn posix_profile_block(fragment: &Path, shell: &str) -> String {
 #[cfg(not(windows))]
 pub fn posix_activation_instruction(managed_bin: &Path) -> String {
     format!(
-        "Open a new shell, or in sh/bash/zsh run export PATH={}:$PATH; then use command -v codex and codex --version.",
-        shell_quote(managed_bin)
+        "Open a new shell, or in sh/bash/zsh run export PATH={}:$PATH; in fish run set -gx PATH {} $PATH; then use command -v codex and codex --version.",
+        shell_quote(managed_bin),
+        fish_quote(managed_bin)
     )
 }
 
