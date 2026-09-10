@@ -236,7 +236,7 @@ def test_ci_input(root: Path) -> None:
         artifact_root,
         output,
         "a" * 40,
-        "refs/tags/v0.1.8",
+        "refs/tags/v0.1.9",
         "https://example.invalid/csa",
     )
     assert value["platforms"]["win32-x64"]["status"] == "pass"

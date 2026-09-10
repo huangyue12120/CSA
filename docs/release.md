@@ -11,7 +11,7 @@ GitHub Actions is the Manager release authority. Local builds are evidence, not 
 
 ## Current Manager release
 
-The current Manager release is [`v0.1.8`](https://github.com/DSLZL/CSA/releases/tag/v0.1.8), and the npm meta package is [`@dslzl/csa@0.1.8`](https://www.npmjs.com/package/@dslzl/csa).
+The current Manager release is [`v0.1.9`](https://github.com/DSLZL/CSA/releases/tag/v0.1.9), and the npm meta package is [`@dslzl/csa@0.1.9`](https://www.npmjs.com/package/@dslzl/csa).
 
 ## Release the Manager
 
@@ -45,7 +45,7 @@ Commit and push the reviewed version change to the default branch.
 Run `Release CSA` from the default branch with the exact SemVer value, for example:
 
 ```text
-version=0.1.8
+version=0.1.9
 ```
 
 The workflow:
@@ -60,20 +60,20 @@ The workflow:
 8. creates an annotated `vX.Y.Z` tag and GitHub Release;
 9. explicitly dispatches npm Trusted Publishing for that tag.
 
-For version `0.1.8`, the asset set is:
+For version `0.1.9`, the asset set is:
 
 ```text
-csa-v0.1.8-windows-x86_64.zip
-csa-v0.1.8-linux-x86_64.tar.gz
-csa-v0.1.8-linux-aarch64.tar.gz
-csa-v0.1.8-macos-x86_64.tar.gz
-csa-v0.1.8-macos-aarch64.tar.gz
-dslzl-csa-0.1.8.tgz
-dslzl-csa-win32-x64-0.1.8.tgz
-dslzl-csa-linux-x64-0.1.8.tgz
-dslzl-csa-linux-arm64-0.1.8.tgz
-dslzl-csa-darwin-x64-0.1.8.tgz
-dslzl-csa-darwin-arm64-0.1.8.tgz
+csa-v0.1.9-windows-x86_64.zip
+csa-v0.1.9-linux-x86_64.tar.gz
+csa-v0.1.9-linux-aarch64.tar.gz
+csa-v0.1.9-macos-x86_64.tar.gz
+csa-v0.1.9-macos-aarch64.tar.gz
+dslzl-csa-0.1.9.tgz
+dslzl-csa-win32-x64-0.1.9.tgz
+dslzl-csa-linux-x64-0.1.9.tgz
+dslzl-csa-linux-arm64-0.1.9.tgz
+dslzl-csa-darwin-x64-0.1.9.tgz
+dslzl-csa-darwin-arm64-0.1.9.tgz
 SHA256SUMS
 ```
 
@@ -99,9 +99,9 @@ This bootstrap requires a maintainer npm login once. Later releases use GitHub O
 A rerun skips an existing version only when registry SRI matches the exact Release tarball. This permits recovery from partial publication without overwriting npm's immutable versions.
 
 ```powershell
-gh workflow run publish-npm.yml --ref main -f tag=v0.1.8
+gh workflow run publish-npm.yml --ref main -f tag=v0.1.9
 npm view @dslzl/csa version dist-tags.latest --registry=https://registry.npmjs.org
-npx --yes @dslzl/csa@0.1.8 --version
+npx --yes @dslzl/csa@0.1.9 --version
 ```
 
 The exact immutable `0.1.4` recovery path is the only exception that disables the Sigstore provenance statement because those old tarballs lack `repository.url`. It still uses OIDC.
