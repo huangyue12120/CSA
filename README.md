@@ -7,7 +7,7 @@ Install and switch between version-pinned patched Codex CLI builds without repla
 [![CI](https://github.com/DSLZL/CSA/actions/workflows/ci.yml/badge.svg)](https://github.com/DSLZL/CSA/actions/workflows/ci.yml)
 [![CSA release](https://img.shields.io/github/v/release/DSLZL/CSA?filter=v%2A&label=CSA)](https://github.com/DSLZL/CSA/releases)
 [![npm](https://img.shields.io/npm/v/%40dslzl%2Fcsa)](https://www.npmjs.com/package/@dslzl/csa)
-[![Patched Codex](https://img.shields.io/badge/patched%20Codex-0.151.0%20p10-white)](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.151.0-native-join-p10)
+[![Patched Codex](https://img.shields.io/badge/patched%20Codex-0.153.2%20p15-white)](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.153.2-native-join-p15)
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [Commands](#commands) · [Documentation](#documentation) · [简体中文](README_ZH.md)
 
@@ -18,7 +18,11 @@ CSA is a Rust manager for patched Codex CLI builds. It detects the installed off
 The official Codex package, configuration, authentication, sessions, and local databases stay in place.
 
 > [!IMPORTANT]
-> The current Manager is `0.1.9`. The current formal patched Release is Codex `0.151.0` p10. Six native patched artifacts are published. Linux runtime discovery validates the managed package, platform package, native binary, and required helpers before activation.
+> The current Manager is `0.1.9`. The current formal patched Release is Codex `0.153.2` p15. Six native patched artifacts are published. Linux runtime discovery validates the managed package, platform package, native binary, and required helpers before activation.
+
+If official Codex reports a migration-checksum error after using p10, follow the
+[database recovery procedure](https://github.com/DSLZL/CSA-codex/blob/main/docs/sqlite-migration-recovery.md).
+p15 preserves native migration checksums; upgrading alone does not repair previously affected databases.
 
 ## What the patch adds
 
@@ -26,7 +30,7 @@ The official Codex package, configuration, authentication, sessions, and local d
 - `join_agents` waits for a fixed set of exact runs and returns results in request order.
 - The TUI keeps live and completed subagent activity visible without merging new work into an old panel.
 - Text, Sixel, and Kitty Orbit renderers support animated and reduced-motion modes.
-- State database migration checks remain compatible with the known cross-host line-ending checksum variant.
+- Native database migration checksums are preserved when returning to the matching official Codex version.
 
 The patch changes Codex behavior. CSA itself handles installation, verification, activation, fallback, and removal.
 
@@ -37,7 +41,7 @@ The npm distribution requires Node.js 18 or newer and a working official Codex C
 | Product | Current release | Published platforms |
 | --- | --- | --- |
 | CSA Manager | `0.1.9` | Windows x64, Linux x64, Linux arm64, macOS x64, macOS arm64 |
-| Patched Codex CLI | [`rust-v0.151.0-native-join-p10`](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.151.0-native-join-p10) | Windows x64/arm64, Linux x64/arm64 musl, macOS x64/arm64 |
+| Patched Codex CLI | [`rust-v0.153.2-native-join-p15`](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.153.2-native-join-p15) | Windows x64/arm64, Linux x64/arm64 musl, macOS x64/arm64 |
 
 Manager support does not guarantee that a patched Codex artifact exists for the same platform. Online installation requires an exact official Codex version and resolves Linux Manager targets to the published musl artifacts.
 
