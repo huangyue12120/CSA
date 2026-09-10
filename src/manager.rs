@@ -16,6 +16,7 @@ use crate::online::{
     InstallSelector, OnlineBundle, resolve_online_install_with_progress,
     resolve_online_install_with_selector,
 };
+use crate::platform::{ensure_executable, selected_runtime_artifact_target};
 use crate::process::{CommandResult, CommandSpec, ProcessRunner};
 use crate::state::{
     Clock, ManagerPaths, PrepareLock, PreparedState, StateStore, ensure_managed_directory,
@@ -230,15 +231,21 @@ pub fn doctor(options: DoctorOptions, runner: &dyn ProcessRunner) -> Result<Doct
     let compatibility = options
         .manifest
         .as_deref()
-        .map(LoadedCompatibility::load)
+        .map(|path| LoadedCompatibility::load_for_target(path, selected_runtime_artifact_target()))
         .transpose()?
-        .map(|loaded| CompatibilityReport {
-            compat_id: loaded.manifest.compat_id.clone(),
-            manifest_path: loaded.manifest_path,
-            codex_version: loaded.manifest.codex_version.clone(),
-            build_target: loaded.manifest.build_target.clone(),
-            exact_official_version: loaded.manifest.codex_version == official.version,
-            supported_build_target: loaded.manifest.artifacts.contains_key(BUILD_TARGET),
+        .map(|loaded| {
+            let build_target = loaded.selected_target().to_owned();
+            CompatibilityReport {
+                compat_id: loaded.manifest.compat_id.clone(),
+                manifest_path: loaded.manifest_path,
+                codex_version: loaded.manifest.codex_version.clone(),
+                build_target,
+                exact_official_version: loaded.manifest.codex_version == official.version,
+                supported_build_target: loaded
+                    .manifest
+                    .artifacts
+                    .contains_key(selected_runtime_artifact_target()),
+            }
         });
     Ok(DoctorReport {
         schema: 1,
@@ -262,7 +269,10 @@ pub fn prepare(
             "pass exactly one of --artifact or --source",
         ));
     }
-    let compatibility = LoadedCompatibility::load_for_target(&options.manifest, BUILD_TARGET)?;
+    let compatibility = LoadedCompatibility::load_for_target(
+        &options.manifest,
+        selected_runtime_artifact_target(),
+    )?;
     compatibility.test_contract()?;
     let paths = ManagerPaths::resolve(options.manager_root)?;
     let _lock = PrepareLock::acquire(&paths)?;
@@ -443,9 +453,18 @@ fn finish_install(
         }
     };
     progress(InstallEvent::Activated);
+    let activation_ready = activation.activation.effective
+        || activation
+            .user_path
+            .as_ref()
+            .is_some_and(|path| matches!(path.status, "verified" | "persisted_for_new_shell"));
     Ok(InstallReport {
         schema: 1,
-        status: "installed",
+        status: if activation_ready {
+            "installed"
+        } else {
+            "prepared_but_inactive"
+        },
         prepare,
         activation,
     })
@@ -509,12 +528,15 @@ fn finalize_prepared_state(
         ));
     }
     let artifact = fingerprint(&artifact_path)?;
+    #[cfg(unix)]
+    verify_artifact_runnable(&artifact.path, &official_after, runner)?;
     let runtime_manifest_path = publish_runtime_manifest(runtime, paths)?;
     let state = PreparedState {
         schema: 2,
         compat_id: runtime.compat_id.clone(),
         manifest_path: runtime_manifest_path,
         build_target: runtime.build_target.clone(),
+        manager_build_target: BUILD_TARGET.to_owned(),
         artifact_path: artifact.path,
         artifact_sha256: artifact.sha256,
         artifact_size: artifact.size,
@@ -528,6 +550,41 @@ fn finalize_prepared_state(
         state,
         official_unchanged: true,
     })
+}
+
+#[cfg(unix)]
+fn verify_artifact_runnable(
+    artifact: &Path,
+    official: &OfficialCodex,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let command = patched_command(CommandSpec::captured(artifact).arg("--version"), official)?;
+    let result = runner.run(&command).map_err(|error| {
+        if error.is_permission_denied() {
+            ManagerError::new(
+                "noexec_filesystem",
+                format!(
+                    "the executable filesystem rejected {}: choose an executable-capable --manager-root",
+                    artifact.display()
+                ),
+            )
+        } else {
+            error
+        }
+    })?;
+    if result.code != Some(0) {
+        return Err(ManagerError::new(
+            "artifact_not_runnable",
+            format!(
+                "verified patched artifact did not complete --version: {}",
+                result.signal.map_or_else(
+                    || format!("{:?}", result.code),
+                    |signal| { format!("signal {signal}") }
+                )
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn publish_compatibility(
@@ -561,7 +618,10 @@ fn publish_compatibility(
                 "compatibility cache must be a real directory inside the manager root",
             ));
         }
-        let existing = LoadedCompatibility::load_for_target(&final_manifest, BUILD_TARGET)?;
+        let existing = LoadedCompatibility::load_for_target(
+            &final_manifest,
+            selected_runtime_artifact_target(),
+        )?;
         existing.test_contract()?;
         compare_payload_files(&files, &existing.payload_files()?)?;
         return Ok(existing);
@@ -591,7 +651,10 @@ fn publish_compatibility(
         }
         fs::rename(&staged, &final_root)
             .map_err(|error| ManagerError::io("publish compatibility payload", error))?;
-        let published = LoadedCompatibility::load_for_target(&final_manifest, BUILD_TARGET)?;
+        let published = LoadedCompatibility::load_for_target(
+            &final_manifest,
+            selected_runtime_artifact_target(),
+        )?;
         published.test_contract()?;
         compare_payload_files(&files, &published.payload_files()?)?;
         Ok(published)
@@ -805,7 +868,7 @@ pub fn exec(options: ExecOptions, runner: &dyn ProcessRunner) -> Result<ExecOutc
         patched_after,
         &isolation,
         RecordedOutcome {
-            exit_code: child.code,
+            exit_code: Some(child.exit_code()),
             result,
             error: error.clone(),
         },
@@ -815,7 +878,7 @@ pub fn exec(options: ExecOptions, runner: &dyn ProcessRunner) -> Result<ExecOutc
         return Err(ManagerError::new("execution_integrity_failure", error));
     }
     Ok(ExecOutcome {
-        exit_code: child.code.unwrap_or(1),
+        exit_code: child.exit_code(),
         record,
     })
 }
@@ -843,14 +906,14 @@ fn command_with_official_runtime(
         "CODEX_MANAGED_BY_NPM",
         "CODEX_MANAGED_BY_BUN",
         "CODEX_MANAGED_BY_PNPM",
+        "CODEX_MANAGED_BY_VITE_PLUS",
         "CODEX_MANAGED_PACKAGE_ROOT",
         "CSA_CODEX_OFFICIAL_PACKAGE_ROOT",
     ] {
         command = command.env_remove(key);
     }
     let Some(runtime) = &official.runtime else {
-        #[cfg(windows)]
-        if patched {
+        if patched && cfg!(any(windows, target_os = "linux")) {
             return Err(ManagerError::new(
                 "state_upgrade_required",
                 "patched Codex has no verified official runtime binding; run csa install again",
@@ -858,12 +921,13 @@ fn command_with_official_runtime(
         }
         return Ok(command);
     };
-    command = command
-        .env(
-            "CODEX_MANAGED_PACKAGE_ROOT",
-            runtime.managed_package_root.as_os_str(),
-        )
-        .env(runtime.package_manager.environment_key(), "1");
+    command = command.env(
+        "CODEX_MANAGED_PACKAGE_ROOT",
+        runtime.managed_package_root.as_os_str(),
+    );
+    if let Some(key) = runtime.package_manager.environment_key() {
+        command = command.env(key, "1");
+    }
     if patched {
         command = command.env(
             "CSA_CODEX_OFFICIAL_PACKAGE_ROOT",
@@ -918,11 +982,10 @@ fn require_compatible_official(codex_version: &str, official: &OfficialCodex) ->
             ),
         ));
     }
-    #[cfg(windows)]
-    if official.runtime.is_none() {
+    if cfg!(any(windows, target_os = "linux")) && official.runtime.is_none() {
         return Err(ManagerError::new(
             "official_runtime_incomplete",
-            "the selected Codex launcher is not backed by a complete official npm, Bun, or pnpm package",
+            "the selected Codex launcher is not backed by a complete official npm, Bun, pnpm, or Vite+ package",
         ));
     }
     Ok(())
@@ -933,10 +996,10 @@ pub(crate) fn validate_prepared_state(
     paths: &ManagerPaths,
     runner: &dyn ProcessRunner,
 ) -> Result<OfficialCodex> {
-    if state.schema != 2 {
+    if state.schema != 2 || state.manager_build_target != BUILD_TARGET {
         return Err(ManagerError::new(
             "state_upgrade_required",
-            "prepared state predates official runtime binding; run csa install again",
+            "prepared state predates the current runtime target contract; run csa install again",
         ));
     }
     let runtime = load_prepared_runtime(state, paths)?;
@@ -1087,6 +1150,7 @@ fn publish_artifact(
     ));
     remove_staged_file(&staged)?;
     provider.materialize(entry, Some(source), &staged)?;
+    ensure_executable(&staged)?;
     let staged_fingerprint = fingerprint_file(&staged)?;
     if staged_fingerprint.sha256 != entry.sha256 || staged_fingerprint.size != entry.size {
         let _ = fs::remove_file(&staged);
@@ -1100,6 +1164,7 @@ fn publish_artifact(
     }
     fs::rename(&staged, &final_path)
         .map_err(|error| ManagerError::io("publish verified artifact", error))?;
+    ensure_executable(&final_path)?;
     Ok(fingerprint(&final_path)?.path)
 }
 

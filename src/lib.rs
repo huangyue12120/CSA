@@ -8,6 +8,7 @@ pub mod i18n;
 pub mod isolation;
 pub mod manager;
 pub mod online;
+pub mod platform;
 pub mod process;
 pub mod state;
 

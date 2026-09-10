@@ -36,6 +36,7 @@ pub(crate) enum Operation {
     Unplug,
     Status,
     Purge,
+    Shell,
     Exec,
 }
 
@@ -228,14 +229,18 @@ impl InstallProgress {
                     .text("Rolling back activation...", "正在回滚激活操作……")
             ),
             InstallEvent::PrioritizingCommand => {
-                writeln!(
-                    writer,
-                    "{}",
+                let message = if cfg!(windows) {
                     self.language.text(
                         "Prioritizing and verifying the codex command; Windows may request administrator permission...",
-                        "正在提高 codex 命令优先级并进行验证；Windows 可能会请求管理员权限……"
+                        "正在提高 codex 命令优先级并进行验证；Windows 可能会请求管理员权限……",
                     )
-                )
+                } else {
+                    self.language.text(
+                        "Preparing shell activation and verifying the codex command...",
+                        "正在准备 Shell 激活并验证 codex 命令……",
+                    )
+                };
+                writeln!(writer, "{message}")
             }
             InstallEvent::Completed => Ok(()),
             InstallEvent::ArtifactProgress { .. } => unreachable!(),
@@ -924,10 +929,41 @@ fn write_human_error(
 }
 
 fn write_json(writer: &mut dyn Write, value: &impl Serialize) -> Result<()> {
-    serde_json::to_writer_pretty(&mut *writer, value).map_err(|error| {
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| {
         ManagerError::new("output_error", format!("serialize JSON output: {error}"))
     })?;
-    writeln!(writer).map_err(|error| ManagerError::io("write JSON output", error))
+    bytes.push(b'\n');
+    writer
+        .write_all(&bytes)
+        .map_err(|error| ManagerError::io("write JSON output", error))
+}
+
+fn activation_refresh_hint(language: Language) -> &'static str {
+    if cfg!(windows) {
+        language.text(
+            "Run `csa plug`, then open a new terminal.",
+            "请运行 `csa plug`，然后打开新终端。",
+        )
+    } else {
+        language.text(
+            "Run `csa plug`, then open a new shell or evaluate `csa shell env bash`; verify with `command -v codex` and `codex --version`.",
+            "请运行 `csa plug`，然后打开新 Shell，或执行 `csa shell env bash`；使用 `command -v codex` 和 `codex --version` 验证。",
+        )
+    }
+}
+
+fn activation_next_step(language: Language) -> &'static str {
+    if cfg!(windows) {
+        language.text(
+            "Close all terminals and terminal-hosting apps, reopen one, then run `where.exe codex` and `codex --version`.",
+            "请关闭所有终端及承载终端的应用，重新打开后运行 `where.exe codex` 和 `codex --version`。",
+        )
+    } else {
+        language.text(
+            "Open a new shell, or run `eval \"$(csa shell env bash)\"`; then run `command -v codex` and `codex --version`.",
+            "请打开新 Shell，或执行 `eval \"$(csa shell env bash)\"`；然后运行 `command -v codex` 和 `codex --version`。",
+        )
+    }
 }
 
 fn recovery_hint(language: Language, operation: Operation, code: &str) -> &'static str {
@@ -1231,10 +1267,7 @@ fn doctor_assessment(
                 "运行 `codex` 时不会使用已准备的补丁版二进制文件。",
             )),
             Some(if status.state.is_some() {
-                language.text(
-                    "Run `csa plug`, then open a new terminal.",
-                    "请运行 `csa plug`，然后打开新终端。",
-                )
+                activation_refresh_hint(language)
             } else {
                 language.text("Run `csa install`.", "请运行 `csa install`。")
             }),
@@ -1262,8 +1295,8 @@ fn doctor_assessment(
                 "运行 `codex` 时选择了其他安装。",
             )),
             Some(language.text(
-                "Run `csa plug`, open a new terminal, then rerun `csa doctor`.",
-                "请运行 `csa plug`，打开新终端，然后重新运行 `csa doctor`。",
+                "Run `csa plug`, open a new shell, then rerun `csa doctor`.",
+                "请运行 `csa plug`，打开新 Shell，然后重新运行 `csa doctor`。",
             )),
         )),
         ("fallback", _) => checks.push(check(
@@ -1341,10 +1374,7 @@ fn doctor_assessment(
                 "当前命令没有使用 CSA 的补丁版 Codex。",
             )),
             Some(if status.state.is_some() {
-                language.text(
-                    "Run `csa plug`, then open a new terminal.",
-                    "请运行 `csa plug`，然后打开新终端。",
-                )
+                activation_refresh_hint(language)
             } else {
                 language.text("Run `csa install`.", "请运行 `csa install`。")
             }),
@@ -1363,8 +1393,8 @@ fn doctor_assessment(
                 "当前命令没有选择补丁版 Codex。",
             )),
             Some(language.text(
-                "Run `csa plug`, open a new terminal, then rerun `csa doctor`.",
-                "请运行 `csa plug`，打开新终端，然后重新运行 `csa doctor`。",
+                "Run `csa plug`, open a new shell, then rerun `csa doctor`.",
+                "请运行 `csa plug`，打开新 Shell，然后重新运行 `csa doctor`。",
             )),
         ));
     } else {
@@ -1498,14 +1528,28 @@ impl HumanReport for PrepareReport {
 
 impl HumanReport for InstallReport {
     fn write_human(&self, writer: &mut dyn Write, language: Language) -> io::Result<()> {
-        writeln!(
-            writer,
-            "{}",
+        let path_persisted = self
+            .activation
+            .user_path
+            .as_ref()
+            .is_some_and(|path| path.status == "persisted_for_new_shell");
+        let message = if cfg!(windows) {
             language.text(
                 "OK Patched Codex installed; activation is ready for new terminals",
                 "成功：补丁版 Codex 已安装，新终端激活已就绪",
             )
-        )?;
+        } else if self.status == "installed" && path_persisted {
+            language.text(
+                "OK Patched Codex installed; shell PATH activation is saved",
+                "成功：补丁版 Codex 已安装，Shell PATH 激活配置已保存",
+            )
+        } else {
+            language.text(
+                "OK Patched Codex prepared; shell activation requires a manual step",
+                "成功：补丁版 Codex 已准备完成，Shell 激活仍需手动执行",
+            )
+        };
+        writeln!(writer, "{message}")?;
         writeln!(
             writer,
             "{}: {}",
@@ -1526,14 +1570,16 @@ impl HumanReport for InstallReport {
                 user_path.status
             )?;
         }
+        let instruction = self
+            .activation
+            .user_path
+            .as_ref()
+            .and_then(|path| path.instruction.as_deref());
         writeln!(
             writer,
             "{}: {}",
             language.text("Next", "下一步"),
-            language.text(
-                "close all terminals and terminal-hosting apps, reopen one, then run `where.exe codex` and `codex --version`.",
-                "请关闭所有终端及承载终端的应用，重新打开后运行 `where.exe codex` 和 `codex --version`。",
-            )
+            instruction.unwrap_or_else(|| activation_next_step(language))
         )
     }
 }
@@ -1557,15 +1603,29 @@ impl HumanReport for UninstallReport {
 
 impl HumanReport for PlugReport {
     fn write_human(&self, writer: &mut dyn Write, language: Language) -> io::Result<()> {
-        let message = if self.changed {
+        let path_persisted = self
+            .user_path
+            .as_ref()
+            .is_some_and(|path| path.status == "persisted_for_new_shell");
+        let message = if cfg!(windows) && self.changed {
             language.text(
                 "OK Patched Codex activation is ready for new terminals",
                 "成功：补丁版 Codex 的新终端激活已就绪",
             )
-        } else {
+        } else if cfg!(windows) {
             language.text(
                 "OK Patched Codex activation was already ready for new terminals",
                 "成功：补丁版 Codex 的新终端激活已就绪",
+            )
+        } else if path_persisted {
+            language.text(
+                "OK Patched Codex activation is saved for new shells",
+                "成功：补丁版 Codex 激活配置已保存，将对新 Shell 生效",
+            )
+        } else {
+            language.text(
+                "OK Patched Codex is prepared; shell activation requires a manual step",
+                "成功：补丁版 Codex 已准备完成，Shell 激活仍需手动执行",
             )
         };
         writeln!(writer, "{message}")?;
@@ -1583,14 +1643,15 @@ impl HumanReport for PlugReport {
                 user_path.status
             )?;
         }
+        let instruction = self
+            .user_path
+            .as_ref()
+            .and_then(|path| path.instruction.as_deref());
         writeln!(
             writer,
             "{}: {}",
             language.text("Next", "下一步"),
-            language.text(
-                "close all terminals and terminal-hosting apps, reopen one, then run `where.exe codex` and `codex --version`.",
-                "请关闭所有终端及承载终端的应用，重新打开后运行 `where.exe codex` 和 `codex --version`。",
-            )
+            instruction.unwrap_or_else(|| activation_next_step(language))
         )
     }
 }
@@ -1741,6 +1802,8 @@ mod tests {
     use csa::online::InstallCandidate;
     use csa::state::PreparedState;
     use serde::Serialize;
+    #[cfg(unix)]
+    use std::ffi::OsString;
     use std::io::{self, Write};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -1754,6 +1817,19 @@ mod tests {
     impl HumanReport for Report {
         fn write_human(&self, writer: &mut dyn Write, language: Language) -> io::Result<()> {
             writeln!(writer, "{} {}", language.text("OK", "成功"), self.status)
+        }
+    }
+
+    #[cfg(unix)]
+    #[derive(Serialize)]
+    struct InvalidPathReport {
+        path: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl HumanReport for InvalidPathReport {
+        fn write_human(&self, writer: &mut dyn Write, _: Language) -> io::Result<()> {
+            writeln!(writer, "path")
         }
     }
 
@@ -1776,6 +1852,7 @@ mod tests {
             compat_id: "rust-v0.150.1-native-join-p10".to_owned(),
             manifest_path: PathBuf::from("C:/csa/manifest.toml"),
             build_target: "x86_64-pc-windows-msvc".to_owned(),
+            manager_build_target: "x86_64-pc-windows-msvc".to_owned(),
             artifact_path: PathBuf::from("C:/csa/patched-codex.exe"),
             artifact_sha256: "b".repeat(64),
             artifact_size: 20,
@@ -2336,5 +2413,20 @@ mod tests {
         assert!(output.contains("正在检测官方 Codex……"));
         assert!(output.contains("正在验证发布信息……"));
         assert!(output.contains("正在下载补丁版 Codex"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_serialization_failure_does_not_write_partial_output() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let report = InvalidPathReport {
+            path: PathBuf::from(OsString::from_vec(vec![b'/', 0xff, b'x'])),
+        };
+        let mut output = Vec::new();
+        let error =
+            write_report_to(&mut output, OutputMode::Json, Language::English, &report).unwrap_err();
+        assert_eq!(error.code, "output_error");
+        assert!(output.is_empty());
     }
 }

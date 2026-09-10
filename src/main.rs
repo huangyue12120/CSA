@@ -5,6 +5,7 @@ use crate::ui::{
     pick_install_candidate, streams_are_interactive, write_doctor_error, write_doctor_report,
     write_error, write_install_cancelled, write_report,
 };
+use csa::cli::ShellAction;
 use csa::cli::{Cli, Invocation, json_requested, usage};
 use csa::error::ManagerError;
 use csa::i18n::Language;
@@ -43,6 +44,7 @@ fn run() -> i32 {
         Cli::Unplug { .. } => Operation::Unplug,
         Cli::Status { .. } => Operation::Status,
         Cli::Purge { .. } => Operation::Purge,
+        Cli::Shell { .. } => Operation::Shell,
         Cli::Exec(_) => Operation::Exec,
         Cli::Help | Cli::Version => Operation::Parse,
     };
@@ -100,6 +102,26 @@ fn run() -> i32 {
                     activate_user_path(&mut report.activation, &runner, &mut |event| {
                         progress.event(event)
                     })?;
+                    report.status = if cfg!(windows) {
+                        if report.activation.activation.effective
+                            || report.activation.user_path.as_ref().is_some_and(|path| {
+                                matches!(path.status, "verified" | "persisted_for_new_shell")
+                            })
+                        {
+                            "installed"
+                        } else {
+                            "prepared_but_inactive"
+                        }
+                    } else if report
+                        .activation
+                        .user_path
+                        .as_ref()
+                        .is_some_and(|path| path.status == "persisted_for_new_shell")
+                    {
+                        "installed"
+                    } else {
+                        "prepared_but_inactive"
+                    };
                     write_report(mode, &report)?;
                     Ok(())
                 });
@@ -121,7 +143,18 @@ fn run() -> i32 {
                 Ok(())
             }),
         Cli::Unplug { manager_root } => {
-            unplug(manager_root).and_then(|report| write_report(mode, &report))
+            let root = manager_root.clone();
+            unplug(manager_root).and_then(|report| {
+                if let Some(root) = root {
+                    remove_user_path(&root, &runner)?;
+                } else {
+                    let root = report.managed_bin.parent().ok_or_else(|| {
+                        ManagerError::new("unsafe_manager_root", "managed bin has no parent")
+                    })?;
+                    remove_user_path(root, &runner)?;
+                }
+                write_report(mode, &report)
+            })
         }
         Cli::Status { manager_root } => {
             status(manager_root, &runner).and_then(|report| write_report(mode, &report))
@@ -130,6 +163,10 @@ fn run() -> i32 {
             remove_user_path(&report.manager_root, &runner)?;
             write_report(mode, &report)
         }),
+        Cli::Shell {
+            action,
+            manager_root,
+        } => run_shell_command(action, manager_root),
         Cli::Exec(options) => {
             return match exec(options, &runner) {
                 Ok(outcome) => outcome.exit_code,
@@ -221,7 +258,25 @@ fn activate_user_path(
         report.user_path = Some(user_path);
     }
     #[cfg(not(windows))]
-    let _ = (report, runner);
+    {
+        let _ = runner;
+        match csa::activation::prioritize_posix_user_path(&report.activation) {
+            Ok(user_path) => report.user_path = Some(user_path),
+            Err(error) => {
+                report.user_path = Some(csa::activation::UserPathReport {
+                    status: "manual_required",
+                    changed: false,
+                    command_resolution: report.activation.command_resolution.clone(),
+                    instruction: Some(format!(
+                        "Persistent shell activation failed: {error}. {}",
+                        csa::activation::posix_activation_instruction(
+                            &report.activation.managed_bin
+                        )
+                    )),
+                });
+            }
+        }
+    }
     progress(InstallEvent::Completed);
     Ok(())
 }
@@ -233,8 +288,34 @@ fn remove_user_path(
     #[cfg(windows)]
     csa::activation::remove_windows_user_path(&manager_root.join("bin"), runner)?;
     #[cfg(not(windows))]
-    let _ = (manager_root, runner);
+    {
+        let _ = runner;
+        csa::activation::remove_posix_user_path(&manager_root.join("bin"))?;
+    }
     Ok(())
+}
+
+fn run_shell_command(
+    action: ShellAction,
+    manager_root: Option<std::path::PathBuf>,
+) -> csa::error::Result<()> {
+    #[cfg(not(windows))]
+    {
+        let output = match action {
+            ShellAction::Init(shell) => csa::activation::shell_init(manager_root, &shell)?,
+            ShellAction::Env(shell) => csa::activation::shell_env(manager_root, &shell)?,
+        };
+        println!("{output}");
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let _ = (action, manager_root);
+        Err(ManagerError::new(
+            "unsupported_shell",
+            "POSIX shell activation is unavailable on Windows",
+        ))
+    }
 }
 
 use csa::activation::{forward_current_shim, is_current_process_shim, plug, purge, unplug};

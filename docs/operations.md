@@ -192,6 +192,19 @@ Preparation publishes a content-addressed patched artifact and a minimal runtime
 
 On Windows, `install` and `plug` first put that directory at the front of the current user's persistent `PATH`. CSA reconstructs the next process's machine-plus-user ordering. If a machine entry still wins, Windows displays a UAC prompt; after approval, CSA installs a protected dispatcher at `%ProgramFiles%\DSLZL\CSA\bin\codex.exe` and puts that directory first in the machine `PATH`. Package-manager launchers remain untouched.
 
+On Linux and other POSIX systems, `install` and `plug` keep the package-manager installation read-only and manage only `<manager-root>/bin`. CSA writes a marker block to `.profile`, `.bashrc`, `.zshrc`, and fish `conf.d` when each profile is a regular UTF-8 file. The block sources a Manager-owned fragment, so repeated activation is idempotent and `uninstall` removes only the CSA block and Manager-owned shell files. If a profile is unavailable or unsafe to update, the result is `manual_required` or `prepared_but_inactive`; it does not claim that command takeover is complete.
+
+For the current shell, use the shell-specific command and verify the resolved command:
+
+```sh
+eval "$(csa shell env bash)"
+command -v codex
+type -a codex
+codex --version
+```
+
+`csa shell env <shell>` only prints a command; it does not modify the caller's environment. Use `eval "$(csa shell env sh)"`, `eval "$(csa shell env bash)"`, or `eval "$(csa shell env zsh)"` for sh, bash, or zsh, and use `eval (csa shell env fish)` for fish. `csa shell init <shell>` prints the profile fragment. Aliases and functions can override `PATH`; inspect them with `type -a codex`.
+
 Existing applications keep the environment they inherited at startup. Close every terminal and fully quit terminal hosts such as VS Code after installation; opening another integrated terminal inside the same window is not enough.
 
 Windows places the machine `PATH` before the user `PATH`. CSA handles that conflict through the elevated dispatcher. Denying UAC returns `path_elevation_failed` and rolls back activation. `path_precedence_conflict` is reserved for a policy or later machine `PATH` change that still prevents the CSA entry from becoming first.
@@ -300,7 +313,9 @@ Choose the narrowest command:
 | `csa uninstall` | Shim, prepared installation, exact user-`PATH` entry, and elevated CSA dispatcher registration | Official Codex, user data, npm package |
 | `csa purge` | All Manager-owned shim, prepared, source, build, state data, and exact user/system CSA `PATH` entries | Official Codex, user data, external packages |
 
-These commands are idempotent. Windows may request UAC when `uninstall` or `purge` removes the Program Files dispatcher and its machine `PATH` entry.
+These commands are idempotent. Windows may request UAC when `uninstall` or `purge` removes the Program Files dispatcher and its machine `PATH` entry. POSIX uninstall removes only the block that loads the selected Manager root's fragment; other roots' blocks and user text, including blank lines and line endings, are preserved. Incomplete or nested markers stop automatic profile editing. A profile without a final newline requires manual activation so uninstall can preserve its original bytes. Use the shell-specific `csa shell env` command above in that case.
+
+An official Codex SQLite migration-checksum error after using a p10 build needs a separate [producer recovery procedure](https://github.com/DSLZL/CSA-codex/blob/main/docs/sqlite-migration-recovery.md). Uninstalling the Manager does not rewrite Codex's database history.
 
 ```powershell
 csa uninstall
@@ -311,14 +326,14 @@ npm uninstall --global @dslzl/csa
 
 | Symptom | Check | Action |
 | --- | --- | --- |
-| `csa` is not recognized | `Get-Command csa -All` and npm global bin | Restart the terminal or use `npx`/`bunx` |
+| `csa` is not recognized | Windows: `Get-Command csa -All`; POSIX: `command -v csa` and npm global bin | Restart the shell or use `npx`/`bunx` |
 | npm or Bun mirror returns 404 | `npm config get registry` | Use `registry.npmjs.org` or wait for mirror sync |
 | Picker has no versions | `csa doctor --json` official version and Manager target | Install a matching official Codex version or wait for a formal compatibility for the resolved artifact target |
 | Install pauses after selection | Human progress and network route | Wait for bounded metadata and mirror probes; retry if a structured network error appears |
-| `codex` still resolves to official | `csa status` and `Get-Command codex -All` | Close all terminals and fully restart the terminal host |
+| `codex` still resolves to official | Windows: `csa status` and `Get-Command codex -All`; POSIX: `csa status` and `type -a codex` | Open a new shell or evaluate `csa shell env <shell>`, then clear the shell command cache |
 | Install reports `path_elevation_failed` | UAC was denied or unavailable | Retry and approve the administrator prompt |
 | Install reports `path_precedence_conflict` | Policy or later machine `PATH` changes still override CSA | Ask an administrator to inspect the machine `PATH`, then run `csa plug` |
-| `codex --version` has no `CSA` marker | The official command still wins or patched mode is inactive | Check that `where.exe codex` lists a CSA path first, then run `csa status` |
+| `codex --version` has no `CSA` marker | The official command still wins or patched mode is inactive | Check command resolution with `where.exe` on Windows or `command -v`/`type -a` on POSIX, then run `csa status` |
 | State becomes invalidated after official upgrade | Official version and hashes | Install a compatibility for the new exact official release |
 | Shim reports fallback | Activation reason in `status --json` | Keep official Codex on `PATH`, then reinstall or unplug |
 | Codex reports a migration checksum mismatch | Database path and exact error | Stop; do not delete the database. Verify the selected compatibility and use an isolated copy for diagnosis |
@@ -337,4 +352,4 @@ Evidence may include paths, versions, hashes, timestamps, and exit results. It m
 - Formal Windows x64 evidence covers exact executable identity, official runtime binding, official-file immutability, and an authenticated single-child Native Join.
 - Multi-child Native Join, the complete database roundtrip, Ultra runtime behavior, and interactive TUI acceptance remain unverified.
 - Windows arm64 has a patched Codex artifact but no CSA Manager npm package.
-- Current Linux Manager packages use GNU targets, while the p10 patched Linux artifacts use musl targets. Exact target matching means those artifacts are not an installable pair.
+- Linux GNU source builds resolve to the corresponding published musl artifact target. The selected Manager target and runtime artifact target are recorded separately in prepared state.

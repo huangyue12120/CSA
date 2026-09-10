@@ -14,7 +14,7 @@ Official Codex installation, read-only
                  | prepare and plug
                  v
       CSA command dispatcher
-        | user PATH: <manager-root>/bin/codex
+        | Windows user PATH or POSIX shell profile: <manager-root>/bin/codex
         | machine conflict: %ProgramFiles%\DSLZL\CSA\bin\codex.exe
           | valid binding   -> patched Codex + verified official runtime
           | invalid binding -> official Codex launcher
@@ -98,7 +98,7 @@ Preparation runs before activation. It holds an exclusive Manager lock, stages f
 
 The artifact directory is content-addressed. Reinstalling the same verified executable can reuse it, but CSA validates the new input before accepting a cache hit.
 
-Activation copies the Manager executable into `<manager-root>/bin/codex[.exe]`. The same Rust binary detects that it was launched as the shim and enters forwarding mode. On Windows, CSA first uses the user `PATH`; only a higher-priority machine entry causes a UAC prompt and installation of the same dispatcher under Program Files. There is no package-manager launcher rewrite or resident service.
+Activation copies the Manager executable into `<manager-root>/bin/codex[.exe]`. The same Rust binary detects that it was launched as the shim and enters forwarding mode. On Windows, CSA first uses the user `PATH`; only a higher-priority machine entry causes a UAC prompt and installation of the same dispatcher under Program Files. On POSIX systems, CSA writes a precise marker block to the user's shell profiles and a Manager-owned fragment, while `csa shell env <shell>` can update the current shell. There is no package-manager launcher rewrite or resident service.
 
 On every launch, the shim checks:
 

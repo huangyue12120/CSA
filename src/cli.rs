@@ -19,6 +19,8 @@ csa plug [--manager-root PATH]
 csa unplug [--manager-root PATH]
 csa status [--manager-root PATH]
 csa purge [--manager-root PATH]
+csa shell init <sh|bash|zsh|fish> [--manager-root PATH]
+csa shell env <sh|bash|zsh|fish> [--manager-root PATH]
 csa exec --isolated [--manager-root PATH] --codex-home PATH --cwd PATH --logs-dir PATH --state-dir PATH --record PATH [--npm-prefix PATH] -- [CODEX_ARGS...]
 
 Global option: --json writes machine-readable output and may appear before or after the command.";
@@ -34,6 +36,8 @@ csa plug [--manager-root PATH]
 csa unplug [--manager-root PATH]
 csa status [--manager-root PATH]
 csa purge [--manager-root PATH]
+csa shell init <sh|bash|zsh|fish> [--manager-root PATH]
+csa shell env <sh|bash|zsh|fish> [--manager-root PATH]
 csa exec --isolated [--manager-root PATH] --codex-home PATH --cwd PATH --logs-dir PATH --state-dir PATH --record PATH [--npm-prefix PATH] -- [CODEX_ARGS...]
 
 全局选项：--json 输出机器可读内容，可放在命令前或命令后。";
@@ -45,16 +49,39 @@ pub fn usage(language: Language) -> &'static str {
 #[derive(Clone, Debug)]
 pub enum Cli {
     Doctor(DoctorOptions),
-    Install { options: InstallOptions, yes: bool },
-    Uninstall { manager_root: Option<PathBuf> },
+    Install {
+        options: InstallOptions,
+        yes: bool,
+    },
+    Uninstall {
+        manager_root: Option<PathBuf>,
+    },
     Prepare(PrepareOptions),
-    Plug { manager_root: Option<PathBuf> },
-    Unplug { manager_root: Option<PathBuf> },
-    Status { manager_root: Option<PathBuf> },
-    Purge { manager_root: Option<PathBuf> },
+    Plug {
+        manager_root: Option<PathBuf>,
+    },
+    Unplug {
+        manager_root: Option<PathBuf>,
+    },
+    Status {
+        manager_root: Option<PathBuf>,
+    },
+    Purge {
+        manager_root: Option<PathBuf>,
+    },
+    Shell {
+        action: ShellAction,
+        manager_root: Option<PathBuf>,
+    },
     Exec(ExecOptions),
     Help,
     Version,
+}
+
+#[derive(Clone, Debug)]
+pub enum ShellAction {
+    Init(String),
+    Env(String),
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +126,7 @@ impl Invocation {
             "purge" => parse_root_only(args, &mut explicit_json, |manager_root| Cli::Purge {
                 manager_root,
             }),
+            "shell" => parse_shell(args, &mut explicit_json),
             "exec" => parse_exec(args, &mut explicit_json),
             "help" | "--help" | "-h" => parse_no_args(args, &mut explicit_json, Cli::Help),
             "--version" | "-V" => parse_no_args(args, &mut explicit_json, Cli::Version),
@@ -327,6 +355,54 @@ fn parse_root_only(
     Ok(make(manager_root))
 }
 
+fn parse_shell(mut args: VecDeque<OsString>, explicit_json: &mut bool) -> Result<Cli> {
+    let action = args
+        .pop_front()
+        .ok_or_else(|| ManagerError::new("invalid_cli", "shell requires init or env"))?;
+    let action = match unicode_flag(&action)? {
+        "init" => true,
+        "env" => false,
+        "--help" | "-h" => return Ok(Cli::Help),
+        value => {
+            return Err(ManagerError::new(
+                "invalid_cli",
+                format!("unknown shell action: {value}"),
+            ));
+        }
+    };
+    let shell = args
+        .pop_front()
+        .ok_or_else(|| ManagerError::new("invalid_cli", "shell requires a shell name"))?;
+    let shell = shell
+        .to_str()
+        .ok_or_else(|| ManagerError::new("invalid_cli", "shell name must be valid Unicode"))?;
+    if matches!(shell, "--help" | "-h") {
+        return Ok(Cli::Help);
+    }
+    let mut manager_root = None;
+    while let Some(flag) = args.pop_front() {
+        match unicode_flag(&flag)? {
+            "--manager-root" => set_path(
+                &mut manager_root,
+                take_value(&mut args, "--manager-root")?,
+                "--manager-root",
+            )?,
+            "--json" => set_json(explicit_json)?,
+            "--help" | "-h" => return Ok(Cli::Help),
+            flag => return Err(unknown_flag(flag)),
+        }
+    }
+    let action = if action {
+        ShellAction::Init(shell.to_owned())
+    } else {
+        ShellAction::Env(shell.to_owned())
+    };
+    Ok(Cli::Shell {
+        action,
+        manager_root,
+    })
+}
+
 fn parse_exec(mut args: VecDeque<OsString>, explicit_json: &mut bool) -> Result<Cli> {
     let mut isolated = false;
     let mut manager_root = None;
@@ -492,6 +568,17 @@ mod tests {
         assert!(usage(Language::English).contains("Global option:"));
         assert!(usage(Language::Chinese).contains("全局选项："));
         assert!(usage(Language::Chinese).contains("csa install [--yes]"));
+    }
+
+    #[test]
+    fn shell_help_is_accepted_before_positional_arguments() {
+        assert!(matches!(parse(&["shell", "--help"]).unwrap(), Cli::Help));
+        assert!(matches!(parse(&["shell", "-h"]).unwrap(), Cli::Help));
+        assert!(matches!(
+            parse(&["shell", "init", "--help"]).unwrap(),
+            Cli::Help
+        ));
+        assert!(matches!(parse(&["shell", "env", "-h"]).unwrap(), Cli::Help));
     }
 
     fn invocation(args: &[&str]) -> crate::error::Result<Invocation> {

@@ -107,6 +107,7 @@ for (const relative of [
 ]) {
   copyText(resolve(metaSource, relative), resolve(metaOutput, relative));
 }
+chmodSync(resolve(metaOutput, 'bin/csa.js'), 0o755);
 for (const asset of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
   copyText(resolve(repository, asset), resolve(metaOutput, asset));
 }

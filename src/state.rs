@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct ManagerPaths {
     pub root: PathBuf,
     pub bin: PathBuf,
+    pub shell: PathBuf,
     pub artifacts: PathBuf,
     pub manifests: PathBuf,
     pub downloads: PathBuf,
@@ -46,8 +47,10 @@ impl ManagerPaths {
                 "manager root must be an absolute normalized path",
             ));
         }
+        require_utf8_path(&root, "manager root")?;
         Ok(Self {
             bin: root.join("bin"),
+            shell: root.join("shell"),
             artifacts: root.join("artifacts"),
             manifests: root.join("manifests"),
             downloads: root.join("downloads"),
@@ -64,6 +67,7 @@ impl ManagerPaths {
         ensure_directory(&self.root)?;
         for directory in [
             &self.bin,
+            &self.shell,
             &self.artifacts,
             &self.manifests,
             &self.downloads,
@@ -84,11 +88,23 @@ pub struct PreparedState {
     pub compat_id: String,
     pub manifest_path: PathBuf,
     pub build_target: String,
+    #[serde(default)]
+    pub manager_build_target: String,
     pub artifact_path: PathBuf,
     pub artifact_sha256: String,
     pub artifact_size: u64,
     pub official: OfficialCodex,
     pub prepared_at_unix_seconds: u64,
+}
+
+pub fn require_utf8_path(path: &Path, label: &str) -> Result<()> {
+    if path.to_str().is_none() {
+        return Err(ManagerError::new(
+            "non_utf8_path",
+            format!("{label} must be valid UTF-8 for JSON-visible state"),
+        ));
+    }
+    Ok(())
 }
 
 pub trait Clock: Send + Sync {
@@ -203,6 +219,7 @@ impl<'a> StateStore<'a> {
 }
 
 pub fn write_record(path: &Path, value: &impl Serialize) -> Result<()> {
+    require_utf8_path(path, "execution record path")?;
     if !path.is_absolute() {
         return Err(ManagerError::new(
             "unsafe_record_path",
