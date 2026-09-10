@@ -7,7 +7,7 @@
 [![CI](https://github.com/DSLZL/CSA/actions/workflows/ci.yml/badge.svg)](https://github.com/DSLZL/CSA/actions/workflows/ci.yml)
 [![CSA release](https://img.shields.io/github/v/release/DSLZL/CSA?filter=v%2A&label=CSA)](https://github.com/DSLZL/CSA/releases)
 [![npm](https://img.shields.io/npm/v/%40dslzl%2Fcsa)](https://www.npmjs.com/package/@dslzl/csa)
-[![Patched Codex](https://img.shields.io/badge/patched%20Codex-0.151.0%20p10-white)](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.151.0-native-join-p10)
+[![Patched Codex](https://img.shields.io/badge/patched%20Codex-0.153.2%20p15-white)](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.153.2-native-join-p15)
 
 [快速开始](#快速开始) · [工作原理](#工作原理) · [命令](#命令) · [文档](#文档) · [English](README.md)
 
@@ -18,7 +18,11 @@ CSA 是用于管理 patched Codex CLI 的 Rust 工具。它会检测本机的官
 官方 Codex package、配置、认证、会话和本地数据库都保留在原位。
 
 > [!IMPORTANT]
-> 当前 Manager 版本是 `0.1.9`。当前正式 patched Release 是 Codex `0.151.0` p10，共发布六个平台产物。Linux runtime 发现会在激活前校验 managed package、platform package、native binary 和必需 helper。
+> 当前 Manager 版本是 `0.1.9`。当前正式 patched Release 是 Codex `0.153.2` p15，共发布六个平台产物。Linux runtime 发现会在激活前校验 managed package、platform package、native binary 和必需 helper。
+
+如果使用 p10 后，官方 Codex 报数据库迁移校验值错误，请按
+[数据库恢复说明](https://github.com/DSLZL/CSA-codex/blob/main/docs/sqlite-migration-recovery.md)操作。
+p15 会保留原生迁移校验值；仅升级版本不能修复已受影响的数据库。
 
 ## 补丁增加了什么
 
@@ -26,7 +30,7 @@ CSA 是用于管理 patched Codex CLI 的 Rust 工具。它会检测本机的官
 - `join_agents` 等待一组固定的精确 run，并按请求顺序返回结果。
 - TUI 会保留实时和已经完成的子代理活动，新任务不会合并到旧面板。
 - Text、Sixel 和 Kitty Orbit renderer 支持动画与 reduced-motion 模式。
-- State database migration 检查兼容已知的跨主机换行 checksum 差异。
+- 保留原生数据库迁移校验值，支持切回匹配版本的官方 Codex。
 
 补丁负责改变 Codex 行为。CSA 本体负责安装、验证、激活、回退和移除。
 
@@ -37,7 +41,7 @@ npm 分发包需要 Node.js 18 或更高版本，并且本机已经有可正常�
 | 产品 | 当前版本 | 已发布平台 |
 | --- | --- | --- |
 | CSA Manager | `0.1.9` | Windows x64、Linux x64、Linux arm64、macOS x64、macOS arm64 |
-| Patched Codex CLI | [`rust-v0.151.0-native-join-p10`](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.151.0-native-join-p10) | Windows x64/arm64、Linux x64/arm64 musl、macOS x64/arm64 |
+| Patched Codex CLI | [`rust-v0.153.2-native-join-p15`](https://github.com/DSLZL/CSA-codex/releases/tag/compat-rust-v0.153.2-native-join-p15) | Windows x64/arm64、Linux x64/arm64 musl、macOS x64/arm64 |
 
 Manager 支持某个平台，不代表该平台一定有 patched Codex 产物。在线安装要求官方 Codex 版本精确匹配，并会将 Linux Manager target 解析到已发布的 musl 产物。
 
