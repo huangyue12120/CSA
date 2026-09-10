@@ -268,8 +268,10 @@ fn activate_user_path(
                     changed: false,
                     command_resolution: report.activation.command_resolution.clone(),
                     instruction: Some(format!(
-                        "Persistent shell activation failed: {error}. Run export PATH='{}':$PATH in the current shell, then use command -v codex and codex --version.",
-                        report.activation.managed_bin.display()
+                        "Persistent shell activation failed: {error}. {}",
+                        csa::activation::posix_activation_instruction(
+                            &report.activation.managed_bin
+                        )
                     )),
                 });
             }

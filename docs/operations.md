@@ -313,7 +313,9 @@ Choose the narrowest command:
 | `csa uninstall` | Shim, prepared installation, exact user-`PATH` entry, and elevated CSA dispatcher registration | Official Codex, user data, npm package |
 | `csa purge` | All Manager-owned shim, prepared, source, build, state data, and exact user/system CSA `PATH` entries | Official Codex, user data, external packages |
 
-These commands are idempotent. Windows may request UAC when `uninstall` or `purge` removes the Program Files dispatcher and its machine `PATH` entry. POSIX uninstall removes the exact CSA profile block and its Manager-owned shell fragment.
+These commands are idempotent. Windows may request UAC when `uninstall` or `purge` removes the Program Files dispatcher and its machine `PATH` entry. POSIX uninstall removes only the block that loads the selected Manager root's fragment; other roots' blocks and user text, including blank lines and line endings, are preserved. Incomplete or nested markers stop automatic profile editing. A profile without a final newline requires manual activation so uninstall can preserve its original bytes. Use the shell-specific `csa shell env` command above in that case.
+
+An official Codex SQLite migration-checksum error after using a p10 build needs a separate [producer recovery procedure](https://github.com/DSLZL/CSA-codex/blob/main/docs/sqlite-migration-recovery.md). Uninstalling the Manager does not rewrite Codex's database history.
 
 ```powershell
 csa uninstall

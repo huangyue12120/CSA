@@ -15,7 +15,9 @@ use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
+#[cfg(not(windows))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -433,6 +435,9 @@ fn prioritize_posix_user_path_in_home(
     let fish_fragment = manager_root.join("shell/csa.fish");
     let profiles = posix_profiles_for_home(home)?;
     let fragment_contents = posix_fragment(&activation.managed_bin);
+    let verification_path = prepend_path(&activation.managed_bin, std::env::var_os("PATH"))?;
+    let paths = ManagerPaths::resolve(Some(manager_root.to_path_buf()))?;
+    let command_resolution = inspect_command_resolution(&paths, Some(&verification_path));
 
     let mut changes = Vec::with_capacity(profiles.len());
     for (path, shell) in profiles {
@@ -446,36 +451,42 @@ fn prioritize_posix_user_path_in_home(
         let after = replace_posix_block(before.as_deref().unwrap_or_default(), &block)?;
         changes.push((path, before, after));
     }
-    write_owned_text(&fragment, fragment_contents.as_bytes())?;
-    write_owned_text(
-        &fish_fragment,
-        format!(
-            "set -gx PATH {} $PATH;\n",
-            shell_quote(&activation.managed_bin)
-        )
-        .as_bytes(),
-    )?;
     let mut changed = false;
-    for (path, before, after) in changes {
-        if before.as_deref() != Some(after.as_str()) {
-            write_owned_text(&path, after.as_bytes())?;
-            changed = true;
+    let persisted = (|| -> Result<()> {
+        write_owned_text(&fragment, fragment_contents.as_bytes())?;
+        write_owned_text(
+            &fish_fragment,
+            format!(
+                "set -gx PATH {} $PATH;\n",
+                fish_quote(&activation.managed_bin)
+            )
+            .as_bytes(),
+        )?;
+        for (path, before, after) in changes {
+            if before.as_deref() != Some(after.as_str()) {
+                write_owned_text(&path, after.as_bytes())?;
+                changed = true;
+            }
         }
-    }
-
-    let verification_path = prepend_path(&activation.managed_bin, std::env::var_os("PATH"))?;
-    let paths = ManagerPaths::resolve(Some(manager_root.to_path_buf()))?;
-    let command_resolution = inspect_command_resolution(&paths, Some(&verification_path));
-    if !command_resolution.resolves_to_managed_shim {
+        Ok(())
+    })();
+    if let Err(error) = persisted {
         return Ok(UserPathReport {
             status: "manual_required",
             changed,
             command_resolution,
-            instruction: Some(posix_activation_instruction(&activation.managed_bin)),
+            instruction: Some(format!(
+                "Persistent shell activation failed: {error}. {}",
+                posix_activation_instruction(&activation.managed_bin)
+            )),
         });
     }
     Ok(UserPathReport {
-        status: "persisted_for_new_shell",
+        status: if command_resolution.resolves_to_managed_shim {
+            "persisted_for_new_shell"
+        } else {
+            "manual_required"
+        },
         changed,
         command_resolution,
         instruction: Some(posix_activation_instruction(&activation.managed_bin)),
@@ -490,19 +501,27 @@ pub fn remove_posix_user_path(managed_bin: &Path) -> Result<bool> {
 
 #[cfg(not(windows))]
 fn remove_posix_user_path_in_home(managed_bin: &Path, home: &Path) -> Result<bool> {
-    managed_bin.parent().ok_or_else(|| {
+    let manager_root = managed_bin.parent().ok_or_else(|| {
         ManagerError::new("unsafe_manager_root", "managed bin has no manager root")
     })?;
-    let mut changed = false;
-    for (path, _) in posix_profiles_for_home(home)? {
+    let mut changes = Vec::new();
+    for (path, shell) in posix_profiles_for_home(home)? {
         let Some(before) = read_owned_text(&path)? else {
             continue;
         };
-        let after = remove_posix_block(&before, "")?;
+        let fragment = manager_root.join(if shell == "fish" {
+            "shell/csa.fish"
+        } else {
+            "shell/csa.sh"
+        });
+        let after = remove_posix_block(&before, &posix_profile_block(&fragment, shell))?;
         if after != before {
-            write_owned_text(&path, after.as_bytes())?;
-            changed = true;
+            changes.push((path, after));
         }
+    }
+    let changed = !changes.is_empty();
+    for (path, after) in changes {
+        write_owned_text(&path, after.as_bytes())?;
     }
     Ok(changed)
 }
@@ -512,7 +531,7 @@ pub fn shell_env(manager_root: Option<PathBuf>, shell: &str) -> Result<String> {
     let paths = ManagerPaths::resolve(manager_root)?;
     let shell = normalize_shell(shell)?;
     Ok(match shell {
-        "fish" => format!("set -gx PATH {} $PATH;", shell_quote(&paths.bin)),
+        "fish" => format!("set -gx PATH {} $PATH;", fish_quote(&paths.bin)),
         _ => format!("export PATH={}:$PATH;", shell_quote(&paths.bin)),
     })
 }
@@ -529,8 +548,8 @@ pub fn shell_init(manager_root: Option<PathBuf>, shell: &str) -> Result<String> 
     Ok(match shell {
         "fish" => format!(
             "if test -r {}; source {}; end",
-            shell_quote(&fragment),
-            shell_quote(&fragment)
+            fish_quote(&fragment),
+            fish_quote(&fragment)
         ),
         _ => format!(
             "[ -r {} ] && . {}",
@@ -586,8 +605,8 @@ fn posix_profile_block(fragment: &Path, shell: &str) -> String {
     let command = if shell == "fish" {
         format!(
             "if test -r {}; source {}; end",
-            shell_quote(fragment),
-            shell_quote(fragment)
+            fish_quote(fragment),
+            fish_quote(fragment)
         )
     } else {
         format!(
@@ -600,9 +619,9 @@ fn posix_profile_block(fragment: &Path, shell: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn posix_activation_instruction(managed_bin: &Path) -> String {
+pub fn posix_activation_instruction(managed_bin: &Path) -> String {
     format!(
-        "Open a new shell, or run export PATH={}:$PATH; then use command -v codex and codex --version.",
+        "Open a new shell, or in sh/bash/zsh run export PATH={}:$PATH; then use command -v codex and codex --version.",
         shell_quote(managed_bin)
     )
 }
@@ -617,10 +636,16 @@ fn prepend_path(directory: &Path, current: Option<OsString>) -> Result<OsString>
         .map_err(|error| ManagerError::new("path_activation_failed", error.to_string()))
 }
 
-#[cfg(not(windows))]
+#[cfg(any(test, not(windows)))]
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(any(test, not(windows)))]
+fn fish_quote(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 #[cfg(not(windows))]
@@ -708,37 +733,61 @@ fn write_owned_text(path: &Path, bytes: &[u8]) -> Result<()> {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(any(test, not(windows)))]
 fn replace_posix_block(existing: &str, block: &str) -> Result<String> {
-    let stripped = remove_posix_block(existing, block)?;
-    let mut result = stripped.trim_end_matches('\n').to_owned();
-    if !result.is_empty() {
-        result.push('\n');
+    let mut result = remove_posix_block(existing, block)?;
+    if !result.is_empty() && !result.ends_with('\n') {
+        // ponytail: refuse a missing final newline so unplug can restore exact bytes.
+        return Err(ManagerError::new(
+            "invalid_profile_block",
+            "shell profile needs a final newline before automatic activation",
+        ));
     }
-    result.push_str(block);
-    result.push('\n');
+    let newline = if result.ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    result.push_str(&block.replace('\n', newline));
+    result.push_str(newline);
     Ok(result)
 }
 
-#[cfg(not(windows))]
-fn remove_posix_block(existing: &str, _: &str) -> Result<String> {
+#[cfg(any(test, not(windows)))]
+fn remove_posix_block(existing: &str, block: &str) -> Result<String> {
     const START: &str = "# >>> CSA managed PATH >>>";
     const END: &str = "# <<< CSA managed PATH <<<";
     let mut result = String::with_capacity(existing.len());
-    let mut remainder = existing;
-    while let Some(start) = remainder.find(START) {
-        result.push_str(&remainder[..start]);
-        let after_start = &remainder[start..];
-        let end = after_start.find(END).ok_or_else(|| {
-            ManagerError::new(
-                "invalid_profile_block",
-                "CSA shell profile marker is incomplete",
-            )
-        })?;
-        let after_end = &after_start[end + END.len()..];
-        remainder = after_end.strip_prefix('\n').unwrap_or(after_end);
+    let mut start = None;
+    let mut offset = 0;
+    let mut copied = 0;
+    let invalid = || {
+        ManagerError::new(
+            "invalid_profile_block",
+            "CSA shell profile markers are incomplete or nested",
+        )
+    };
+    for line in existing.split_inclusive('\n') {
+        match line.trim_end_matches(['\r', '\n']) {
+            START if start.is_some() => return Err(invalid()),
+            START => start = Some(offset),
+            END => {
+                let begin = start.take().ok_or_else(invalid)?;
+                let end = offset + line.len();
+                let candidate = existing[begin..end].trim_end_matches(['\r', '\n']);
+                if candidate.replace("\r\n", "\n") == block {
+                    result.push_str(&existing[copied..begin]);
+                    copied = end;
+                }
+            }
+            _ => {}
+        }
+        offset += line.len();
     }
-    result.push_str(remainder);
+    if start.is_some() {
+        return Err(invalid());
+    }
+    result.push_str(&existing[copied..]);
     Ok(result)
 }
 
@@ -1650,42 +1699,78 @@ fn sync_directory(_: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod profile_block_tests {
+    use super::{fish_quote, remove_posix_block, replace_posix_block, shell_quote};
+    use std::path::Path;
+
+    #[test]
+    fn profile_blocks_preserve_user_bytes_and_other_manager_roots() {
+        let block = "# >>> CSA managed PATH >>>\n[ -r '/tmp/csa/shell/csa.sh' ] && . '/tmp/csa/shell/csa.sh'\n# <<< CSA managed PATH <<<";
+        let other = block.replace("/tmp/csa/", "/tmp/other/");
+        for existing in [
+            "",
+            "export EDITOR=vi\n\n\n",
+            "export EDITOR=vi\r\n\r\n",
+            "echo '# >>> CSA managed PATH >>>'\n",
+        ] {
+            let once = replace_posix_block(existing, block).unwrap();
+            assert!(once.starts_with(existing));
+            assert_eq!(replace_posix_block(&once, block).unwrap(), once);
+            assert_eq!(remove_posix_block(&once, block).unwrap(), existing);
+            assert_eq!(remove_posix_block(&once, &other).unwrap(), once);
+            let both = replace_posix_block(&once, &other).unwrap();
+            assert_eq!(remove_posix_block(&both, &other).unwrap(), once);
+            assert_eq!(
+                remove_posix_block(&remove_posix_block(&both, block).unwrap(), &other).unwrap(),
+                existing
+            );
+        }
+        let duplicate = format!("{block}\n{block}\n");
+        assert_eq!(remove_posix_block(&duplicate, block).unwrap(), "");
+
+        for malformed in [
+            "# >>> CSA managed PATH >>>\n",
+            "# <<< CSA managed PATH <<<\n",
+            "# >>> CSA managed PATH >>>\n# >>> CSA managed PATH >>>\n# <<< CSA managed PATH <<<\n",
+        ] {
+            assert_eq!(
+                remove_posix_block(malformed, block).unwrap_err().code,
+                "invalid_profile_block"
+            );
+        }
+        let no_newline = "export EDITOR=vi";
+        assert_eq!(
+            replace_posix_block(no_newline, block).unwrap_err().code,
+            "invalid_profile_block"
+        );
+        assert_eq!(remove_posix_block(no_newline, block).unwrap(), no_newline);
+    }
+
+    #[test]
+    fn shell_quotes_preserve_apostrophes_and_backslashes() {
+        assert_eq!(
+            shell_quote(Path::new("/tmp/it's-csa/bin")),
+            "'/tmp/it'\\''s-csa/bin'"
+        );
+        assert_eq!(
+            fish_quote(Path::new("/tmp/it\\'s\\\\csa/bin")),
+            "'/tmp/it\\\\\\'s\\\\\\\\csa/bin'"
+        );
+    }
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::{
         ActivationReport, CommandResolution, prioritize_posix_user_path_in_home,
-        remove_posix_block, remove_posix_user_path_in_home, replace_posix_block, shell_quote,
-        verify_staged_shim,
+        remove_posix_user_path_in_home, verify_staged_shim,
     };
     use crate::error::{ManagerError, Result};
     use crate::process::{CommandResult, CommandSpec, ProcessRunner};
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn posix_profile_block_is_idempotent_and_reversible() {
-        let existing = "export EDITOR=vi\n";
-        let block = "# >>> CSA managed PATH >>>\n[ -r '/tmp/csa/shell/csa.sh' ] && . '/tmp/csa/shell/csa.sh'\n# <<< CSA managed PATH <<<";
-        let once = replace_posix_block(existing, block).unwrap();
-        let twice = replace_posix_block(&once, block).unwrap();
-        assert_eq!(once, twice);
-        assert_eq!(remove_posix_block(&twice, "").unwrap(), existing);
-    }
-
-    #[test]
-    fn incomplete_posix_profile_block_fails_closed() {
-        let error = remove_posix_block("# >>> CSA managed PATH >>>\n", "").unwrap_err();
-        assert_eq!(error.code, "invalid_profile_block");
-    }
-
-    #[test]
-    fn posix_shell_quote_escapes_single_quotes() {
-        assert_eq!(
-            shell_quote(Path::new("/tmp/it's-csa/bin")),
-            "'/tmp/it'\\''s-csa/bin'"
-        );
-    }
 
     #[test]
     fn posix_profile_files_are_idempotent_reversible_and_preserve_mode() {
@@ -1740,6 +1825,8 @@ mod tests {
         let second = prioritize_posix_user_path_in_home(&activation, &home).unwrap();
         assert_eq!(second.status, "persisted_for_new_shell");
         assert!(!second.changed);
+        assert_eq!(fs::read_to_string(&profile).unwrap(), first_contents);
+        assert!(!remove_posix_user_path_in_home(&root.join("other/bin"), &home).unwrap());
         assert_eq!(fs::read_to_string(&profile).unwrap(), first_contents);
 
         assert!(remove_posix_user_path_in_home(&managed_bin, &home).unwrap());

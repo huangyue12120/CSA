@@ -865,6 +865,18 @@ mod tests {
         fs::create_dir_all(package.join("codex-resources")).unwrap();
         fs::create_dir_all(package.join("codex-path")).unwrap();
         fs::write(
+            package
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .join("package.json"),
+            format!(
+                r#"{{"name":"{}","version":"0.149.0"}}"#,
+                super::runtime_platform().unwrap().package_name
+            ),
+        )
+        .unwrap();
+        fs::write(
             managed.join("package.json"),
             br#"{"name":"@openai/codex","version":"0.149.0"}"#,
         )
@@ -928,7 +940,10 @@ mod tests {
             };
             let managed = node_modules.join("@openai/codex");
             let package = node_modules
-                .join("@openai/codex-win32-x64/vendor")
+                .join(format!(
+                    "{}/vendor",
+                    super::runtime_platform().unwrap().package_name
+                ))
                 .join(BUILD_TARGET);
             fs::create_dir_all(&launcher_dir).unwrap();
             fs::write(launcher_dir.join(launcher_name), b"launcher").unwrap();
@@ -949,7 +964,10 @@ mod tests {
                 let second_modules = root.join("node_modules");
                 let second_managed = second_modules.join("@openai/codex");
                 let second_package = second_modules
-                    .join("@openai/codex-win32-x64/vendor")
+                    .join(format!(
+                        "{}/vendor",
+                        super::runtime_platform().unwrap().package_name
+                    ))
                     .join(BUILD_TARGET);
                 write_windows_runtime(&second_managed, &second_package, BUILD_TARGET);
                 let error =

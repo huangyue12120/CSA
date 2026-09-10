@@ -9,10 +9,13 @@ use csa::activation::{forward_shim, plug, purge, select_shim_target, shim_path, 
 #[cfg(target_os = "linux")]
 use csa::activation::{shell_env, shell_init};
 use csa::compat::LoadedCompatibility;
+#[cfg(unix)]
 use csa::detect::{FileFingerprint, OfficialCodex};
 use csa::error::Result;
 use csa::hash::sha256_bytes;
-use csa::isolation::{IsolationPlan, IsolationRequest};
+#[cfg(unix)]
+use csa::isolation::IsolationPlan;
+use csa::isolation::IsolationRequest;
 #[cfg(target_os = "linux")]
 use csa::manager::{DoctorOptions, doctor};
 use csa::manager::{
@@ -156,8 +159,15 @@ impl Fixture {
         let (official, native, official_package, managed_package) = {
             let bun_root = temp.join(".bun");
             let managed_package = bun_root.join("install/global/node_modules/@openai/codex");
+            let platform_name = if cfg!(target_arch = "x86_64") {
+                "@openai/codex-win32-x64"
+            } else {
+                "@openai/codex-win32-arm64"
+            };
             let official_package = bun_root
-                .join("install/global/node_modules/@openai/codex-win32-x64/vendor")
+                .join("install/global/node_modules")
+                .join(platform_name)
+                .join("vendor")
                 .join(BUILD_TARGET);
             fs::create_dir_all(bun_root.join("bin")).unwrap();
             fs::create_dir_all(official_package.join("bin")).unwrap();
@@ -170,7 +180,7 @@ impl Fixture {
                     .and_then(Path::parent)
                     .unwrap()
                     .join("package.json"),
-                format!(r#"{{"name":"@openai/codex-win32-x64","version":"{VERSION}"}}"#),
+                format!(r#"{{"name":"{platform_name}","version":"{VERSION}"}}"#),
             )
             .unwrap();
             fs::write(
@@ -291,6 +301,16 @@ impl Fixture {
         }
         #[cfg(windows)]
         {
+            let platform_manifest = self
+                .official_package
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .join("package.json");
+            let mut platform: Value =
+                serde_json::from_slice(&fs::read(&platform_manifest).unwrap()).unwrap();
+            platform["version"] = Value::from(_version);
+            fs::write(platform_manifest, serde_json::to_vec(&platform).unwrap()).unwrap();
             fs::write(
                 self.official_package.join("codex-package.json"),
                 format!(

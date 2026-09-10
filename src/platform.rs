@@ -1,5 +1,7 @@
 use crate::BUILD_TARGET;
-use crate::error::{ManagerError, Result};
+#[cfg(unix)]
+use crate::error::ManagerError;
+use crate::error::Result;
 #[cfg(unix)]
 use std::fs;
 use std::path::Path;
@@ -64,7 +66,10 @@ pub fn ensure_executable(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_executable, runtime_artifact_target};
+    #[cfg(unix)]
+    use super::ensure_executable;
+    use super::runtime_artifact_target;
+    #[cfg(unix)]
     use std::fs;
     #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};

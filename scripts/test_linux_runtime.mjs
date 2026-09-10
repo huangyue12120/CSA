@@ -9,9 +9,9 @@ import { spawn } from 'node:child_process';
 assert.equal(process.platform, 'linux', 'this acceptance fixture must run on Linux');
 assert.ok(process.argv[2], 'usage: node scripts/test_linux_runtime.mjs <manager>');
 
-function run(manager, args, cwd) {
+function run(manager, args, cwd, env = process.env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(manager, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(manager, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -99,6 +99,23 @@ fi
   assert.equal(init.code, 0, init.stderr);
   assert.match(init.stdout, /csa\.sh/);
 
+  const quotedRoot = path.join(temporary, "manager 'quote\\slash\\\\ dollar$");
+  const quotedBin = path.join(quotedRoot, 'bin');
+  mkdirSync(quotedBin, { recursive: true });
+  executable(path.join(quotedBin, 'codex'), versionScript);
+  for (const shell of ['sh', 'bash', 'zsh', 'fish']) {
+    const command = await run(manager, ['shell', 'env', shell, '--manager-root', quotedRoot], temporary);
+    assert.equal(command.code, 0, command.stderr);
+    const resolved = await run(shell, ['-c', `${command.stdout}\ncommand -v codex`], temporary, {
+      PATH: process.env.PATH,
+      HOME: temporary,
+      XDG_CONFIG_HOME: path.join(temporary, 'config'),
+      ZDOTDIR: temporary,
+    });
+    assert.equal(resolved.code, 0, `${shell}: ${resolved.stderr}`);
+    assert.equal(resolved.stdout.trim(), path.join(quotedBin, 'codex'), shell);
+  }
+
   rmSync(path.join(runtime, 'codex-resources', 'bwrap'));
   const incomplete = await run(
     manager,
@@ -109,7 +126,7 @@ fi
   assert.equal(JSON.parse(incomplete.stderr).error.code, 'official_runtime_incomplete');
 
   process.stdout.write(
-    `${JSON.stringify({ schema: 1, runtime_discovery: 'pass', shell_activation: 'pass', helper_drift: 'pass' })}\n`,
+    `${JSON.stringify({ schema: 1, runtime_discovery: 'pass', shell_activation: 'pass', shell_quoting: 'sh/bash/zsh/fish', helper_drift: 'pass' })}\n`,
   );
 } finally {
   rmSync(temporary, { recursive: true, force: true });

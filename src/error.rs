@@ -21,6 +21,7 @@ impl ManagerError {
         Self::new("io_error", format!("{context}: {error}"))
     }
 
+    #[cfg(unix)]
     pub(crate) fn is_permission_denied(&self) -> bool {
         self.message
             .to_ascii_lowercase()

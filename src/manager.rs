@@ -7,7 +7,7 @@ use crate::compat::{
     ArtifactEntry, ContractStep, LoadedCompatibility, RuntimeManifest, TestContract,
 };
 use crate::detect::{
-    FileFingerprint, OfficialCodex, detect_official, find_executable, fingerprint,
+    FileFingerprint, OfficialCodex, detect_official, find_executable, fingerprint, fingerprint_file,
 };
 use crate::error::{ManagerError, Result};
 use crate::hash::sha256_bytes;
@@ -1151,7 +1151,7 @@ fn publish_artifact(
     remove_staged_file(&staged)?;
     provider.materialize(entry, Some(source), &staged)?;
     ensure_executable(&staged)?;
-    let staged_fingerprint = fingerprint(&staged)?;
+    let staged_fingerprint = fingerprint_file(&staged)?;
     if staged_fingerprint.sha256 != entry.sha256 || staged_fingerprint.size != entry.size {
         let _ = fs::remove_file(&staged);
         return Err(ManagerError::new(
